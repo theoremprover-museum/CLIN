@@ -1,0 +1,24 @@
+
+	Compared with /rho/plaisted/lee/clin/ where the original prover is.
+
+	auxiliary: floor functions.
+	clausify:  no change
+	command:   assign/2 to assign_cmd/2.
+	define:	   new
+	exprules:  no change
+	fls:	   cputime, line 70, bagof1 the first argument X changed to Z.
+	hyper:	   cputime, hl_literals call at 286,  proc_C at 792
+	instdel:   cputime, 52 add erase(Ref1)
+	interp:	   cputime, interp_1 added interp_1_define to take care of
+		   'define' stuff. Correct argument bug (one missing) in 
+		   ubfsupp_o_1/7.
+	library:   appended removed for Quintus.
+	main:	   floor, cputime, call(X) at line 286, assign_cmd at 432.
+	pc:	   cputime, reduce_set_1/10 bug corrected.
+	prover:	   just file names, actually directory.
+	replace:   cputime
+	simplify:  cputime, change binary_max_ind/4 at 408
+	skolem:    new
+	spc:	   cputime
+	try:	   cputime, floor at 485
+	xvisor:	   change assign/2 to assign_cmd/2, all of them.

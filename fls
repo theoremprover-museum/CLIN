@@ -1,0 +1,165 @@
+%%% FLS 
+%%%
+%%% The calculation of fully linked subset is very expensive, 
+%%% so we need to keep the number of clauses small. 
+%%% Hyper-linking is much better than linking in this sense.
+%%%
+%%% This algorithm is a little bit tricky. Fisrtly, we create in_fls set.
+%%% Secondly, we construct a link list for each in_fls. The link
+%%% list looks like:
+%%%	mref = link(F,[L1,L2,...,Ln])
+%%% F is the corresponding in_fls. Li is the link list for literal i in
+%%% in_fls. Each Li records the pointers to in_fls which has a mate of this
+%%% literal. Thirdly, we remove the non-fully linked clauses iteratively.
+%%%
+%%% In this version, we don't assert mref into the database, but we
+%%% put them in a list since they don't have any variables so prolog
+%%% won't complain a list with too many variables.
+%%%
+%%% User can choose either real fully linked subset or virtual fully 
+%%% linked subset to be calculated. 
+%%% Virtual fully linked subset is used as default since we have a
+%%% very fast propositional calculus prover.
+%%%
+
+     compute_fls(FLS) :-
+	realfls,
+	cputime(TT1),
+	const_list(Clist),
+	tr_form(Clist),			% transform to economical form.
+	create_r(MRefs1),		% create link lists.
+	remove_clauses(MRefs1,MRefs2),	% remove unlinked clauses.
+	find_fls(MRefs2,FLS),		% find ground fls.
+	abolish(in_fls,2),		% release memory.
+	abolish(db_erased,1),		% release memory.
+	cputime(TT6),
+	TT7 is TT6 -TT1,
+	write_line(5,'Computing FLS(s): ',TT7),
+	!.
+     compute_fls(FLS) :-
+	cputime(TT1),
+	cputime(TT2),
+	bagof1(X,grfclause(X),FLS),
+	TT3 is TT2 - TT1,
+	write_line(5,'Computing FLS(s): ',TT3), !.
+
+     grfclause(X) :-
+	sent_C(cl(_,_,by(Cn1,V11,V11,V1,_),_,_,_,_,_,_)),
+	grf_list(V1),
+	X = Cn1.
+
+%%% transform to simpler form: in_fls(F,Ref1).
+     tr_form(Clist) :-
+	clause(sent_C(cl(_,_,by(_,_,_,_,W1),_,_,_,_,_,_)),true,Ref1),
+	tr_form(Clist,W1,Ref1,F),
+	assertz(in_fls(F,Ref1)),
+	fail.
+     tr_form(_).
+
+     tr_form(Clist,W1,Ref1,F) :- tr_form(Clist,W1,Ref1,1,F).
+     tr_form(Clist,[_|Ws1],Ref1,N1,[Ln2|Ls2]) :-
+	clause(sent_C(cl(_,_,by(Cn2,V21,V21,_,W2),_,_,_,_,_,_)),true,Ref1),
+	retrieve_N2(Cn2,W2,N1,Ln2,_,Wn2,_),
+	Wn2 = Clist,
+	N2 is N1 + 1, !,
+	tr_form(Clist,Ws1,Ref1,N2,Ls2).
+     tr_form(_,[],_,_,[]).
+
+%%% create link lists.
+     create_r(MRefs1) :- 
+	bagof1(Z,(Y,Z)^in_fls(Y,Z),Refs1),
+	create_r(Refs1,Refs1,MRefs1).
+
+     create_r([Ref1|Refs1],Rin,[MRef1|MRefs1]) :- 	
+	create_r2(Ref1,Rin,MRef1),
+	!,
+	create_r(Refs1,Rin,MRefs1).
+     create_r([],_,[]).
+
+     create_r2(Ref1,Rin,link(Ref1,Links)) :-
+	clause(in_fls(Cg1,_),true,Ref1),
+	create_r3(Cg1,Ref1,Rin,Links), !.
+
+     create_r3([],_,_,[]).
+     create_r3([Lg1|Lgs1],Ref1,Rin,[Link|Links]) :-
+	negate(Lg1,NLg1),
+	create_r4(Rin,Ref1,NLg1,Link),	% R1 is reference list for one literal.
+	create_r3(Lgs1,Ref1,Rin,Links).
+
+     create_r4([],_,_,[]).
+     create_r4([Ref1|Refs1],Ref1,NLg1,Link) :-
+	!, create_r4(Refs1,Ref1,NLg1,Link), !.
+     create_r4([Ref2|Refs1],Ref1,NLg1,Link) :-
+	clause(in_fls(Cg2,_),true,Ref2),
+	create_r5(NLg1,Cg2,Ref2,Link,Link2),
+	!,
+	create_r4(Refs1,Ref1,NLg1,Link2).
+     create_r4([_|Refs1],Ref1,NLg1,Link) :-
+	create_r4(Refs1,Ref1,NLg1,Link).
+
+     create_r5(NLg1,[NLg1|_],Ref2,[Ref2|Link2],Link2) :-
+	!.				% red cut.
+     create_r5(NLg1,[_|Lgs1],Ref2,Link,Link2) :-
+	!, create_r5(NLg1,Lgs1,Ref2,Link,Link2).
+
+
+%%% REMOVE UNLINKING NODES
+%%%
+%%% There is a trick for remove_clauses. We assure that if a literal
+%%% has a link then it can be detected by only checking the first
+%%% pointer in the literal link list after the first time. The reason
+%%% is that we delete the erased pointers in the literal link list
+%%% as we check the link relationship.
+%%% Note that we don't delete all the erased in_fls in a literal link
+%%% list. All we do is deleting the erased in_fls in front of a non-
+%%% erased in_fls, then stop. This process is the by-product of the
+%%% assoc routine. This will save time because deleting
+%%% the erased in_fls after a non-erased in_fls doesn't do any good
+%%% for us, and furthermore it needs extra time to do it.
+
+     remove_clauses(MRefs1,MRefs2) :-
+	iterate(MRefs1,ORefs1),
+	!,
+	remove_clauses(ORefs1,MRefs2).
+     remove_clauses(MRefs2,MRefs2).
+
+%%% We want to make it most efficient. If a in_fls has been deleted, then
+%%% we start from the begining again since the deleted in_fls may cause the
+%%% previous in_fls's to be deleted. If the current in_fls has bot been deleted,
+%%% then we continue to check the following in_fls because start from the 
+%%% beginning will do nothing for the previous in_fls.
+
+     iterate([link(Ref1,Links)|MRefs1],[link(Ref1,NLinks)|ORefs1]) :-
+	assoc(Links,NLinks), !,		% check the link relationship.
+	iterate(MRefs1,ORefs1).
+     iterate([link(Ref1,_)|MRefs1],MRefs1) :-
+	erase(Ref1),
+	assert(db_erased(Ref1)).
+
+     assoc([Link|Links],[NLink|NLinks]) :-	
+					% succeed if all literals have links,
+	assoc_1(Link,NLink), !,		% fail if one literal has no links.
+	assoc(Links,NLinks).
+     assoc([],[]).
+
+     assoc_1([Link|Links],[Link|Links]) :-	
+	\+ db_erased(Link), !.		% red cut.
+     assoc_1([_|Links],NLink) :-
+	assoc_1(Links,NLink).
+
+%%% FIND OUT FLS
+%%%
+%%% We don't delete the duplicates in FLS, since duplicating is not a problem
+%%% for PC-prover.
+     find_fls(MRefs1,FLS) :-
+	grf_list(Glist),
+	find_fls(MRefs1,Glist,FLS).
+
+     find_fls([link(Ref1,_)|MRefs1],Glist,[Cn2|FLSs1]) :-			
+					% ground fls set.
+	clause(in_fls(_,Ref2),true,Ref1),
+	clause(sent_C(cl(_,_,by(Cn2,V21,V21,Glist,_),_,_,_,_,_,_)),
+		true,Ref2),
+	!,
+	find_fls(MRefs1,Glist,FLSs1).
+     find_fls([],_,[]).

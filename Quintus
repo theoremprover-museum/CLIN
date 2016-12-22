@@ -1,0 +1,58 @@
+%%%
+%%% Specific code for Quintus Prolog.
+%%%
+
+%%%
+%%% Simply fail unknown predicates.
+:- initialization(unknown(_,fail)).
+
+%%%
+%%% Cputime/1.
+%%%
+    cputime(X) :-
+      statistics(runtime,[Y,_]),
+      X is Y/1000.
+
+%%%
+%%% Floor/2.
+%%%
+    floor(X,Y) :-
+      X < 0,
+      !,
+      Y is integer(X) - 1.
+    floor(X,Y) :-
+      Y is integer(X).
+
+%%%
+%%% Not/1.
+%%%
+    not(X) :-
+      \+ X.
+
+%%%
+%%% Quintus_banner/0.
+%%%
+    quintus_banner :-
+      clin_version(Version),
+      nl, tab(15),write('WELCOME TO CLIN '),
+      write(Version),nl,
+      write('(c) 1991 by Geoff Alexander, Shie-Jue Lee, and David Plaisted'),
+      nl,nl,nl,
+      !.
+
+%%%
+%%% load_file/1.
+%%%
+load_file(X) :-
+  no_style_check(single_var),
+  compile(X).
+
+%%%
+%%% Overide selection operator precedences.
+%%%
+:- initialization(op(900,fy,[not])).
+:- op(900,fy,[not]).
+:- op(30,fx,[@]).
+:- op(100,xfy,[&]).
+:- op(120,xfy,[#]).
+:- op(150,xfx,[=>,<=>]).

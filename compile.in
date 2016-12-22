@@ -1,0 +1,3 @@
+compile('prover').
+save_program('compile.out.1').
+halt.

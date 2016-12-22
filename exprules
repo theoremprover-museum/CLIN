@@ -1,0 +1,54 @@
+%%% EXPERT RULES
+%%%
+%%% The order of these rules can be changed, or new entries can be added.
+%%%
+%%% The supervisor runs an unsolved problem with a strategy from top to 
+%%% bottom. 
+%%% If the expert rule the supervisor retrieved is not a rule of support 
+%%% strategy, the rule is executed and next rule is retrieved.
+%%% If the expert rule the supervisor retrieved is a rule of support 
+%%% strategy, the rule is executed and an unsolved problem is tried under 
+%%% the current options.
+
+expert_rule(time_limit_coef(1)).
+expert_rule(support_list([ur])).
+expert_rule(time_limit_coef(1)).
+expert_rule(support_list([r])).
+
+expert_rule(literal_bound(-1)).
+%expert_rule(time_limit_coef(1)).
+%expert_rule(support_list([b])).
+expert_rule(time_limit_coef(1)).
+expert_rule(support_list([f,b])).
+expert_rule(time_limit_coef(1)).
+expert_rule(support_list([b,f])).
+%expert_rule(time_limit_coef(1)).
+%expert_rule(support_list([f])).
+expert_rule(time_limit_coef(0.5)).
+expert_rule(support_list([n])).
+expert_rule(time_limit_coef(1)).
+expert_rule(support_list([u])).
+expert_rule(time_limit_coef(0.5)).
+expert_rule(support_list([o])).
+
+expert_rule(literal_bound(2)).
+%expert_rule(time_limit_coef(0.5)).
+%expert_rule(support_list([b])).
+expert_rule(time_limit_coef(0.5)).
+expert_rule(support_list([f,b])).
+expert_rule(time_limit_coef(0.5)).
+expert_rule(support_list([b,f])).
+expert_rule(time_limit_coef(0.5)).
+%expert_rule(support_list([f])).
+%expert_rule(time_limit_coef(0.25)).
+expert_rule(support_list([n])).
+expert_rule(time_limit_coef(0.5)).
+expert_rule(support_list([u])).
+expert_rule(time_limit_coef(0.25)).
+expert_rule(support_list([o])).
+
+%%% Specify complete strategies.
+complete_strategy([f,b]).
+complete_strategy([b,f]).
+%complete_strategy([f]).
+%complete_strategy([b]).

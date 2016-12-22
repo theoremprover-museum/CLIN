@@ -1,0 +1,436 @@
+%%% MAIN
+%%%
+%%% This section contains the main procedure.
+%%%
+%%% Two input file formats:
+%%% A. CLAUSE FORMAT:
+%%%    For clauses p(X) or q(Y),not(P(a)) would be expressed as
+%%%	[p(X),q(X)].
+%%%	[not p(a)].
+%%%
+%%% B. SPRFN FORMAT:
+%%%    For above clauses
+%%%	p(X) :- not q(X).
+%%%	false :- p(a).
+%%%
+%%% The internal form of clauses Clause_I is:
+%%%	cl(Size,Nv,by(Cn,V1,V2,V,W),Input,sp(S1,S2,S3),ds(R1,R2,R3),
+%%%		Replace,Flags,Priority)
+%%%	Size is the size of the clause.
+%%%	Nv is the number of non-ground literals
+%%%	Cn is the clause linearized form.
+%%%	V1 and V2 are variable lists in the clause for occurs check.
+%%%	V is the variable list in the clause for computing ground form.
+%%%	W is a list:
+%%%		[W1,W2,...,Wn]
+%%%	where Wi is the variable list in literal i for computing ground
+%%%		form of literal i.
+%%%	Input is 1 if the clause is input clause. Otherwise 0.
+%%%	S1,S2,S3 record the support status.
+%%%		1 represents supported, 0 not supported.
+%%%		S1 for user suported, S2 for backward supported, and
+%%%		S3 for forward supported.
+%%%	R1,R2,R3 record the distance.
+%%%             S1 for user distance, S2 for backward distance, and
+%%%             S3 for forward distance.
+%%%	Replace is 1 if the clause is an instance of replace rules, 
+%%%		0 otherwise.
+%%%	Flags is the replacement field.
+%%%		If a literal is not used for replacement, then 1.
+%%%		Otherwise 0.
+%%%	Priority is 
+%%%	   a. If sliding priority is specified, then
+%%%		Priority = pr(PS,PD,PL,PR,P) where 
+%%%		PS = integer(size_coef*(max size of literals))
+%%%		PD = integer(depth_coef*depth)
+%%%		PL = integer(literal_coef*(number of literals))
+%%%		PR = integer(relevance_coef*max(B+F,U))
+%%%			B, F and U are backward, forward, and user distances
+%%%			respectively.
+%%%		P is max(PS,PD,PL,PR)
+%%%	   b. If sliding priority is not specified, then
+%%%		Priority = pr(0,0,0,0,0)
+%%%
+
+%%% Prove the theorem in File.
+%%% If user_control is specified, then File is the problem to be solved.
+%%% Otherwise, File may be the problem itself or a file containg
+%%%	a list of problems depending if batch mode is used.
+     prove(File) :- 			
+	user_control, !,
+	prove_1(File), !, fail.
+     prove(File) :- 			
+	xvisor(File), !, fail.
+
+%%% prove_1 fails in the following cases: 
+%%%     Read erroneous commands in interp.
+%%%     No user support clauses if user support strategy is specified
+%%%	in interp.
+%%% 
+%%% Clear the database to avoid the interference of the assertions from
+%%%	the previous run.
+%%% Call interpreter to assert clauses with internal format.
+%%% If automatic control, check if the input is a horn set.
+%%% Try to solve the given problem.
+%%% Print out statistics for the tried problem.
+%%% Reset flags due to horn set.
+%%% If user_control, reset options that are set in the spec. of the problem.
+     prove_1(Prob) :- 			
+	not(not(clear_database)),
+	assert(file_name(Prob)),
+	!,
+	interp,
+	not(not(set_real_time_limit)),
+	check_horn_set(D),
+	try,
+	not(not(summary)),
+	reset_by_horn_set(D),
+	not(not(postproc)), !.
+
+%%% CLEAR DATABASE
+%%%
+%%% Clear the database so that the remanants from the previous problem won't
+%%% affect the proof of the current problem.
+     clear_database :-			% clearing the database.
+	abolish(infer_visited,4),
+	abolish(ordering_inference,1),
+	abolish(clause_largest_length,1),
+        abolish(cps_A,5),	 	% data structure for spc.
+        abolish(cps_I,6),	 	% data structure for spc.
+        abolish(cps_O,5),	 	% data structure for spc.
+        abolish(cps_U,5),	 	% data structure for spc.
+        abolish(cps_V,5),	 	% data structure for spc.
+	abolish(sp_size,1),  		% small proof size.
+	abolish(db_erased,1),		% release memory.
+	abolish(du,2),			% temporary assertions in unit simp.
+	abolish(error,1),		% error indication.
+	abolish(file_name,1),		% file name.
+	abolish(in_fls,2),		% release memory.
+	abolish(last_hyperlink_time,1),% time spent on last hyper-linking.
+	abolish(lit_G,4),		% general literal list.
+	abolish(lit_S,4),		% literal list from supported clauses.
+	abolish(lit_N_G,5),		% literal list for replacements.
+	abolish(lit_N_V,5),		% literal list for replacements.
+	abolish(lit_ST_G,5),		% literal list for replacements.
+	abolish(lit_ST_V,5),		% literal list for replacements.
+	abolish(lit_U,3),		% literal list from unit clauses.
+	abolish(no_user_clauses,0),  	% set in interp.
+	abolish(nonvar_depth_weight,2), % depth weight for non-variable.
+	abolish(nonvar_size_weight,2),  % size weight for non-variable.
+	abolish(nu,1),			% used in duplicate deletion.
+	abolish(num,1),			% for numbering printed stuff.
+	abolish(number_inclauses,1),	% number of input clauses.
+	abolish(ou,2),			% temporary assertions in unit simp.
+	abolish(out_model_rc,0),	% clear flag for pc prover.
+	abolish(pc_time,1),		% record total pc prover time.
+	abolish(proof_type,1),		% proof type.
+	abolish(prove_result,1),	% record the proof result.
+	abolish(replace_rule_1,5),	% replace rules.
+	abolish(replace_rule_2,5),	% replace rules.
+	abolish(sent_INST,1),		% temp. clauses in hyper-linking.
+	abolish(sent_T,1),		% temp. clauses in hyper-linking.
+	abolish(sent_c,1),		% temp. clauses.
+	abolish(session_no,1),		% store session no.
+	abolish(start_time,1),		% starting time of the proof.
+	abolish(uparg,6),		% used in duplicate deletion.
+	abolish(updated_arguments,0),	% used in duplicate deletion.
+	abolish(user_support,1),	% user support indicator.
+	abolish(user_supportset,1),	% user support list.
+	abolish(var_depth_weight,2),    % depth weight for all variables.
+	abolish(var_size_weight,2),     % size weight for all variables.
+	abolish(wu_bound,1),		% current hyper-link workunit bound.
+	session_deletions, !.		% deletions done before a session.
+
+% delete assertions of the previous session.
+     session_deletions :- 
+	abolish(current_support,1),	% recording current support strategy.
+	abolish(num_supp,1),		% Nth support strategy in support list.
+	abolish(old_C,1),		% old clauses.
+	abolish(over_litbound,0),	% indicator, too many literals.
+	abolish(over_numvars,0),	% indicator, too many variables.
+	abolish(over_priohl,0),		% indicator, over priority.
+	abolish(over_relevance,0),	% indicator, over relevance.
+	abolish(priority_bound,1),	% current priority bound.
+	abolish(prio_wu,3),		% counter for different priorities.
+	abolish(round_no,1),		% current round number.
+	abolish(round_time,2),		% the time at end of each round.
+	abolish(same_db_supp,1),	% support round strategy having 
+					% unchanged assertions.
+	abolish(total_numhl,1), 	% total number of instances so far.
+	abolish(total_wu,1).		% total work units so far.
+
+%%% Set real time limit.
+%%% Default is no change.
+     set_real_time_limit :-
+	\+ user_control,
+	time_limit(X),
+	set_real_time_limit(X), !.
+     set_real_time_limit :-
+	time_limit(X),
+	set_real_time_limit(X), !.
+
+     set_real_time_limit(T) :-
+	time_limit_coef(F),
+	abolish(real_time_limit,1),
+	Temp is F*T,
+	floor(Temp, RTL),
+	assert(real_time_limit(RTL)).
+     set_real_time_limit(T) :-
+	abolish(real_time_limit,1),
+	assert(real_time_limit(T)).
+
+%%% If user_control, then no effect.
+%%% If the input is Horn-set, then set delete_all_instances.
+     check_horn_set(1) :-
+	user_control, !.
+     check_horn_set(X) :-
+	check_horn_set_2(X),
+	check_horn_set_1.
+
+     check_horn_set_1 :-
+	sent_C(cl(_,_,by(Cn1,_,_,_,_),_,_,_,_,_,_)),
+	check_horn_clause(Cn1), !.	% succeed if not horn set.
+     check_horn_set_1 :-		% If horn set.
+	set(delete_all_instances).
+
+     check_horn_clause(Cn1) :-		% fail if horn clause.
+	horn_clause(Cn1),
+	!,
+	fail.
+     check_horn_clause(_).		% If not horn set.
+
+%%% If delete_all_instances is set initially, return 1, otherwise 0.
+     check_horn_set_2(1) :-
+	delete_all_instances, !.
+     check_horn_set_2(0).
+
+%%% Reset the delete_all instances if necessary.
+%%% If delete_all_instances is not set initially, delete it. 
+     reset_by_horn_set(0) :-
+	clear(delete_all_instances), !.
+     reset_by_horn_set(_).
+
+%%% 
+%%% REPORT OUT
+%%%
+%%% Report the summary of the proof.
+     summary :-
+	cputime(T),
+	nl,
+	write_line(5,'SUMMARY:'),
+	report_file,
+	settings,
+	check_print_pc_model_rc,
+	report_proof(T), !.
+
+%%% Print out filename and number of input clauses of the underlying problem.
+     report_file :-
+	file_name(File),
+	write_line(5,'Underlying-File: ',File),
+	number_inclauses(IN),
+	write_line(5,'Number-Of-Input-Clauses: ',IN).
+
+%%% Print out options set for the underlying problem.
+     settings :-
+	member(X,[
+		outCagen,
+		outCahl,
+		outCainst,
+		outCasimp,
+		outfls,
+		outhl,
+		outhllits,
+		outpc,
+		outpcin,
+		depth_coef(_),
+		literal_coef(_),
+		max_no_clauses(_),
+		relevance_bound(_),
+		relevance_coef(_),
+		size_coef(_),
+		start_no_clauses(_),
+		start_no_clauses_coef(_),
+		support_list(_),
+		time_limit(_),
+		time_limit_coef(_),
+		time_limit_multiple(_),
+		back_literalbound(_),
+		small_proof_size_bound(_),
+		for_literalbound(_),
+		literal_bound(_),
+		user_literalbound(_),
+		start_wu_bound(_),
+		count_all_literals,
+		delete_all_instances,
+		delete_nf_instances,
+		do_hyper_linking,
+		ground_disting_after_match,
+		ground_restriction,
+		ground_substitution,
+		hl_literal_reordering,
+		realfls,
+		replace_literal_reordering,
+		replacement,
+		simple_small_proof_check,
+		size_by_clause,
+		slidepriority,
+		small_proof_check,
+		small_proof_check_all,
+		spc_literal_reordering,
+		sum_of_measures,
+		super_batch,
+		tautology_deletion,
+		unit_resolution,
+		user_control
+	]),
+	call(X),
+	write_line(15,'',X),
+	fail.
+     settings.
+
+%%% Print out information about the try of the underlying problem.
+     report_proof(T) :-
+	report_trystatus,
+	report_proof_type,
+	report_session_round_no,
+     	report_number_C_space,
+	report_PrWu_bounds,
+	report_pc_time,
+	report_total_time(T).
+
+%%% What is the status of the try.
+     report_trystatus :-
+	tab(25),write('What: '),
+	prove_result(PR),
+	write(PR),nl,!.
+
+%%% If the underlying problem was proved, how it was proved.
+%%% If was proved by small proof checker, print out small proof size.
+     report_proof_type :-
+	report_proof_type_1(PT),
+	report_proof_type_2(PT).
+
+     report_proof_type_1(PT) :-
+	proof_type(PT),
+	write_line(25,'Proof-Type: ',PT), !.
+     report_proof_type_1(_).
+
+     report_proof_type_2(PT) :-
+	PT == 'SP',
+	sp_size(N1), 
+	write_line(25,'Small_Proof_Size: ',N1), !.
+     report_proof_type_2(_).
+
+%%% Print out how many rounds in the final session.
+     report_session_round_no :-
+	session_no(SessionNo),
+	round_no(RoundNo),
+	write_line(25,'Number-Of-Sessions: ',SessionNo),
+	write_line(25,'Number-Of-Rounds: ',RoundNo).
+
+%%% Print out how many clauses at the end.
+     report_number_C_space :-
+	get_C_number_space(0,0,M,S),
+	write_line(25,'Number-Of-Clauses-Retained: ',M),
+	write_line(25,'Space-Used-In-Units: ',S).
+		      
+     get_C_number_space(M1,S1,M2,S2) :-
+	retract(sent_C(cl(Z,_,_,_,_,_,_,_,_))),
+	MM is M1 + 1,
+	SS is S1 + Z,
+	!, get_C_number_space(MM,SS,M2,S2).
+     get_C_number_space(M,S,M,S).
+
+%%% Print out information about sliding priority.
+     report_PrWu_bounds :-
+	slidepriority,
+        report_PrWu_bounds_1, !.
+     report_PrWu_bounds.
+
+     report_PrWu_bounds_1 :-
+	priority_bound(PrioBound),
+	write_line(25,'Priority-Bound: ',PrioBound),
+	wu_bound(WUBound),
+	write_line(25,'Work-Unit-Bound: ',WUBound), !. 
+     report_PrWu_bounds_1.
+
+%%% Print out total PC time used.
+     report_pc_time :-
+	tab(25),write('PC-Prover-Time: '),
+     	report_pc_time_1.
+
+     report_pc_time_1 :-
+	pc_time(PCTIME), write(PCTIME), nl, !.
+     report_pc_time_1 :-
+	write(0), nl.
+
+%%% Print out total CPU time used.
+     report_total_time(T) :-
+	start_time(Start_Time),
+	Used_Time is T - Start_Time,
+	write_line(25,'Total-Time: ',Used_Time).
+
+%%% Print out model or relevant clauses to the proof by PC prover.
+     check_print_pc_model_rc :-
+	outpc,
+	print_pc_model_rc.
+     check_print_pc_model_rc.
+
+     print_pc_model_rc :-
+	prove_result('satisfiable'),
+	print_pc_model_rc_1, !.
+     print_pc_model_rc :-
+	proof_type('PC'),
+	print_pc_model_rc_1, !.
+     print_pc_model_rc.
+	
+     print_pc_model_rc_1 :-
+	compute_fls(FMS),
+	assert(out_model_rc),
+	run_pc_mr(FMS),
+	abolish(out_model_rc,0), !.
+
+     run_pc_mr(FMS) :-
+	outpcin,
+	write_line(5,'Input to PC:'),
+	print_clause_list(FMS),
+	intell_pc(FMS,_).
+     run_pc_mr(FMS) :- 
+	intell_pc(FMS,_).
+
+%%% Postprocess commands in input file.
+     postproc :-
+	user_control,
+	file_name(File),
+	seeing(Input),
+	see(File),
+	read_till_end_input,
+	postproc_1,
+	seen,   
+	see(Input), !.
+     postproc.
+
+%%% Read input until the command end_of_input.
+     read_till_end_input :-
+	repeat,
+		read(Term),
+		Term == 'end_of_input'.
+
+     postproc_1 :-
+	read(Term),
+	Term \== 'end_of_file',
+	postproc_1(Term), !,
+	postproc_1.
+     postproc_1.
+
+%%% Perform actions according to the command.
+     postproc_1(set(X)) :-
+	set(X).
+     postproc_1(clear(X)) :-
+	clear(X).
+     postproc_1(assign(X,V)) :-
+	assign_cmd(X,V).
+     postproc_1(delete(X,V)) :-
+	delete(X,V).
+     postproc_1(Term) :-
+	write_line(5,'ERROR: Wrong input -> ',Term), !, fail.

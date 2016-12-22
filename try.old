@@ -1,0 +1,530 @@
+%%% TRY
+%%%
+%%% The following sequence are performed iteratively:
+%%%	Do replacements
+%%%	Do unit simplification/subsumption
+%%%	Run PC prover
+%%%	Run small proof cheker
+%%%	Do hyper-linking
+%%% until
+%%%	Proof is found or
+%%%	satisfiable or
+%%%	time overflow or
+%%%	relevance overflow or
+%%%	hyper overflow
+%%%
+%%% If sliding priority is not specified, instances are generated
+%%%	until done.
+%%% If sliding priority is specified, we divide the running into sessions.
+%%%	Each session starts with a work unit bound and infinite priority
+%%%	bound. If a session fails to find the proof, double the work unit
+%%%	bound, and start a new session.
+%%%
+
+%%% clause_largest_length is very important, we use it in small proof 
+%%% 	checking and hyper-linking.
+%%% If tried_round is 1, this means we are using top level supervisor,
+%%%	and the problem we are trying has been tried before with 
+%%%	different strategies in same time limit. Since all the calls
+%%%	in round 0 have been executed before, we don't execute them again.
+%%% 	However, we should run top_level_replace if it is specified.
+%%%
+%%% The replacement, if set, will be executed at round 0 of each session.
+%%%
+     try :-  not(not(try_fail)).
+
+     try_fail :- 
+	priority_option,
+	obtain_largest_clause_length,
+     	assert(round_no(-1)),		% initial value for round number.
+     	assert(session_no(1)),		% initial value for round number.
+	cputime(Time),
+	assert(start_time(Time)),
+	assert(round_time(Time,-1)),
+	assert(pc_time(0)),		% initialize PC time.
+	nl,
+	write_line(5,'TRY BEGINS:'),
+	try_1,
+	!.
+
+%%% Interative exexution of rounds.
+     try_1 :-
+	repeat,
+		print_roundheader,
+		find_roundsupport,
+		round_process,
+		round_spent_time.
+
+%%% Executing one round.
+     round_process :-
+	round_no(0),
+	!, execute_r0, !.
+     round_process :-
+	execute_r.
+
+%%% If round 0.
+     execute_r0 :-
+	session_no(1),
+	!, execute_r0_s1, !.
+     execute_r0 :-
+	execute_r0_s1_2.
+
+%%% If round 0 and session 1.
+     execute_r0_s1 :-
+	\+ tried_round0(1),
+	!, execute_r0_s1_1, !.
+     execute_r0_s1 :-
+	execute_r0_s1_2.
+
+     execute_r0_s1_1 :-
+	precheck, !.
+     execute_r0_s1_1 :-
+	top_level_replace,
+	!, round_process_2.
+
+%%% If round 0 and not session 1.
+     execute_r0_s1_2 :-
+	replacement,
+	top_level_replace,
+	!, round_process_2.
+     execute_r0_s1_2 :-
+	round_spent_time, !, fail.
+
+     run_simplify :-
+	prove_result('unsatisfiable'), !.
+     run_simplify :-
+	simplify,			% if an EC derived.
+	assert_tryresult('unsatisfiable'),
+	assert_prooftype('US').
+
+     run_pcprover :-
+	compute_fls(FLS),		% compute fully linked set.
+	print_fls(FLS), !,
+	pcprove(FLS),
+	assert_tryresult('unsatisfiable'),
+	assert_prooftype('PC').
+
+     run_spc :-
+	spc,   
+	assert_tryresult('unsatisfiable'),
+	assert_prooftype('SP').
+
+%%% If the input set has neither positive nor negative clauses,
+%%%	and no replacements are specified, then it is satisfiable.
+     precheck :-
+	check_emptyclause,
+	assert_tryresult('unsatisfiable'),
+	assert_prooftype('PR'), !.
+     precheck :-
+	check_emptyset,
+	assert_tryresult('satisfiable'), !.
+     precheck :-
+	\+ replacement,
+	\+ have_pn_clauses,
+	write_line(5,'No positive or negative clauses !!'),
+	assert_tryresult('satisfiable'), !.
+
+%%% If not round 0.
+     execute_r :-
+	check_hl_round,
+	!, round_process_1.
+
+%%% hl_round can be turned off.
+     check_hl_round :-
+	do_hyper_linking,
+	hl_round, 
+	print_ahl, !.
+     check_hl_round :- !.
+
+%%% If an empty clause is generated during hyper-linking.
+     round_process_1 :-
+	prove_result('unsatisfiable'), !.
+%%% Do replacements if requested.
+     round_process_1 :-
+	top_level_replace,
+     	!, round_process_2.
+
+%%% Do unit simplification/subsumption, and so on.
+     round_process_2 :-
+	print_busentC,
+	run_simplify, !.
+%%% Check if to continue.
+     round_process_2 :-
+	\+ new_instance_generated, 
+	!, check_go_1.
+     round_process_2 :-
+	pc_inst_spc, !.
+     round_process_2 :-
+	round_spent_time, 
+	!, check_go.
+
+%%% Run PC prover.
+     pc_inst_spc :-
+	check_run_pc.
+%%% Do instance deletion if necessary. Run small proof checker.
+     pc_inst_spc :-
+	not(not(inst_del)).
+     pc_inst_spc :-
+	print_after_instdel,
+	!, run_spc. 
+
+%%% If UR round, no PC prover.
+     check_run_pc :-
+	current_support(sup(_,_,_,1)),
+	!,
+	fail.
+     check_run_pc :-
+	run_pcprover.
+
+     check_go_1 :-
+     	current_support(Sup),
+	!, check_go_1(Sup).
+
+     check_go :-
+     	current_support(Sup),
+	not(not(abolish(same_db_supp,1))),
+	assert(same_db_supp(Sup)), !,
+	check_go_2.
+
+%%% If time overflow, stop.
+     check_go_2 :-
+	time_overflow.
+
+%%% If the set is empty.
+     check_emptyset :-
+	\+ sent_C(_), !.
+	      
+%%% If there is an empty clause.
+     check_emptyclause :-
+	sent_C(cl(_,_,by([],_,_,_,_),_,_,_,_,_,_)), !.
+
+%%% If having positive and negative clauses.
+     have_pn_clauses :-
+	have_p_clauses, !,
+	have_n_clauses.
+
+%%% If having positive clauses.
+     have_p_clauses :-
+	sent_C(cl(_,_,by(Cn1,_,_,_,_),_,_,_,_,_,_)),
+	posclause(Cn1).
+
+%%% If having negative clauses.
+     have_n_clauses :-
+	sent_C(cl(_,_,by(Cn1,_,_,_,_),_,_,_,_,_,_)),
+	negclause(Cn1).
+
+     assert_prooftype(Message) :-
+	assert(proof_type(Message)).
+
+     assert_tryresult(Result) :-
+	assert(prove_result(Result)).
+
+%%% Information for sliding priority.
+     priority_option :-
+	slidepriority,
+	compute_start_wu(WU),
+	assert(priority_bound(WU)), 
+	assert(wu_bound(WU)), 
+	assert(total_numhl(0)),
+	assert(total_wu(0)), !.
+     priority_option.
+
+     simplify :-
+	fol_simplify,
+	print_ausentC, !.
+     simplify :-
+	print_ausentC,
+	!,
+	fail.
+
+%%% Assert the largest number of literals of clauses.
+     obtain_largest_clause_length :-
+	sent_C(cl(_,_,by(Cn1,_,_,_,_),_,_,_,_,_,_)),
+	length(Cn1,N1),
+	assert_larger_clause_length(N1),
+	fail.
+     obtain_largest_clause_length.
+
+%%% Update the largest number of literals of clauses.
+     assert_larger_clause_length(N1) :-
+	clause_largest_length(N2),
+	assert_larger_clause_length_1(N1,N2), !.
+     assert_larger_clause_length(N1) :-
+	assert(clause_largest_length(N1)), !.
+
+     assert_larger_clause_length_1(N1,N2) :-
+	N1 =< N2, !.
+     assert_larger_clause_length_1(N1,_) :-
+	retract(clause_largest_length(_)),
+	assert(clause_largest_length(N1)).
+
+%%% Print out header information for a round.
+     print_roundheader :-
+	session_no(Y),
+	inc_roundno(X),			% increment round no.
+	nl, tab(15), write('SESSION '), write(Y), 
+	tab(10), write('ROUND '), write(X), nl,
+	write_line(5,'#######################################################'),
+	file_name(File),
+	write_line(19,'File Name = ',File),
+	relevance_bound(RelBound),
+	write_line(17,'Relevance Bound = ',RelBound),
+	print_priority_figures, !.
+
+%%% Increment round number and assert it.
+     inc_roundno(Y) :-
+	retract(round_no(X)), Y is X + 1,
+	assert(round_no(Y)), !.
+
+%%% Print out information if sliding priority is used.
+     print_priority_figures :-
+	slidepriority,
+ 	wu_bound(WUBound),
+	write_line(20,'WU Bound = ',WUBound),
+	priority_bound(PrioBound),
+	write_line(17,'Priority Bound = ',PrioBound), !.
+     print_priority_figures.
+
+%%% Print out how much time spent in the past round.
+     round_spent_time :-
+	round_no(X), Y is X - 1,
+	cputime(Time),
+	retract(round_time(LT,Y)),
+	Used_Time is Time - LT,
+	write_line(5,'Time elapsed in this level(s): ',Used_Time),
+	assert(round_time(Time,X)), !.
+
+%%% Check if we should stop or not.
+     check_go_1(Sup) :-
+	same_db_supp(Sup), !,
+	check_go_1_1.
+     check_go_1(Sup) :-
+	assert(same_db_supp(Sup)), !,
+	check_go_1_2.
+
+     check_go_1_1 :-
+	decidably_satisfiable.
+     check_go_1_1 :-
+	more_session.
+
+%%% We can detect if a problem is really satisfiable.
+     decidably_satisfiable :-
+	\+ over_priohl, !,
+	\+ over_relevance, !,
+	\+ over_litbound, !,
+	\+ over_numvars,
+	assert_tryresult('satisfiable').
+
+%%% If time overflow, stop.
+     check_go_1_2 :-
+	time_overflow, !.
+     check_go_1_2 :-
+	round_spent_time, !, fail.
+
+     time_overflow :-
+	is_time_overflow,
+	assert_tryresult('time_overflow').
+
+     is_time_overflow :-
+	start_time(Start_Time),
+	real_time_limit(Max_Time),
+	cputime(Current_Time),
+	Used_Time is Current_Time - Start_Time,
+	!,
+	Used_Time > Max_Time. 
+
+%%% Check if a new session is needed.
+     more_session :-
+	slidepriority, !,
+	check_stopsession.
+     more_session :-
+	assert_tryresult('misc_overflow').
+
+%%% If there are some instances deleted due to priority overflow,
+%%%	do check_maxhlno.
+     check_stopsession :-
+	over_priohl, !, 
+	check_maxhlno.
+%%% Otherwise, stop.
+     check_stopsession :-
+	assert_tryresult('misc_overflow').
+
+%%% Check if the number of clauses in the database exceeds a specified 
+%%%	number.
+     check_maxhlno :-
+	total_numhl(NumHm),
+	wu_bound(WU),
+	max_no_clauses(MaxINSTNo), !,
+	check_maxinstno_1(NumHm,MaxINSTNo,WU).
+
+%%% If the number of clauses in the database does not exceed a specified
+%%%     number.
+     check_maxinstno_1(NumHm,MaxINSTNo,WU) :-
+	NumHm =< MaxINSTNo, !,
+     	check_maxinstno_2(WU).
+%%% If the number of clauses in the database exceeds a specified
+%%%     number, stop.
+     check_maxinstno_1(_,_,_) :-
+	assert_tryresult('clause_no_overflow').
+
+%%% If time overflow, stop.
+     check_maxinstno_2(WU) :-
+	time_overflow, !.
+%%% Otherwise, double work unit bound and start a new session.
+     check_maxinstno_2(WU) :-
+	round_spent_time,
+	Y is 2 * WU,
+	not(not(abolish(wu_bound,1))),
+	assert(wu_bound(Y)),
+	!, new_session.
+
+%%% Start a new session.
+     new_session :-
+	not(not(session_deletions)),
+	not(not(setup_inputs)),
+	session_asserts,
+	!, fail.
+
+%%% Assert some initial values for a new session.
+     session_asserts :-
+	cputime(Time),
+	assert(round_time(Time,-1)),
+	assert(round_no(-1)),
+	inc_session,
+	wu_bound(S),
+	assert(priority_bound(S)), 
+	assert(total_wu(0)),
+	assert(total_numhl(0)).
+
+%%% Increase session number.
+     inc_session :-
+	retract(session_no(X)),
+	Y is X + 1,
+	assert(session_no(Y)).
+
+%%% Use the input clauses stored at the beginning.
+     setup_inputs :-
+	retract(sent_C(cl(_,_,_,0,_,_,_,_,_))),
+	fail.
+     setup_inputs.
+
+%%% Check if new intances have been generated in the current
+%%%	round.
+     new_instance_generated :-
+	const_list(Clist),
+	!,
+	diff_sentC(Clist),
+	update_oldsentC(Clist).
+
+%%% Succeeds if a new clause is not generated before.
+     diff_sentC(Clist) :-
+	sent_C(cl(CSize1,CN1,by(Cn1,V11,V11,Clist,_),_,CS1,_,_,_,_)),
+	\+ old_C(cl(CSize1,CN1,Cn1,CS1)), !.
+     diff_sentC(_) :- fail.
+
+%%% Update old clauses.
+     update_oldsentC(Clist) :-
+	sent_C(cl(CSize1,CN1,by(Cn1,V11,V11,Clist,_),_,CS1,_,_,_,_)),
+	update_oldsentC_1(CSize1,CN1,Cn1,CS1),
+	fail.
+     update_oldsentC(_).
+
+     update_oldsentC_1(CSize1,CN1,Cn1,CS1) :-
+	old_C(cl(CSize1,CN1,Cn1,CS1)), !.
+     update_oldsentC_1(CSize1,CN1,Cn1,CS1) :-
+	assert(old_C(cl(CSize1,CN1,Cn1,CS1))), !.
+
+%%% Find support strategy for next round.
+     find_roundsupport :-
+	round_no(0), !.
+     find_roundsupport :-
+	support_list(S1),
+	support_list_internal(Sup),
+	find_roundsupport_1(Sup,S1), !.
+
+     find_roundsupport_1(Sup,S1) :-
+	retract(num_supp(N)),
+	retract(current_support(_)),
+	length(Sup,NSup),
+	find_roundsupport_2(Sup,S1,N,NSup), !.
+     find_roundsupport_1([H|_],[H1|_]) :-
+	assert(num_supp(1)),
+	assert(current_support(H)),
+	!,
+	report_supptype(H1).
+
+     find_roundsupport_2(Sup,S1,N,NSup) :-
+	N < NSup,
+	N2 is N + 1,
+	retrieve_N2(Sup,S1,N2,CurSup,_,H1,_),
+	assert(num_supp(N2)),
+	assert(current_support(CurSup)),
+	!,
+	report_supptype(H1), !.
+     find_roundsupport_2([H|_],[H1|_],_,_) :-
+	assert(num_supp(1)),
+	assert(current_support(H)),
+	!,
+	report_supptype(H1), !.
+
+     report_supptype(Sup) :- 
+	write_line(5,'Support strategy: ',Sup), !.
+
+%%% Compute starting work unit bound.
+%%% If the starting work unit bound is specified by the user, done.
+     compute_start_wu(WU) :-
+	start_wu_bound(WU), WU \== 0, !.
+%%% Otherwise, compute it.
+     compute_start_wu(WU) :-
+	compute_start_wu_1(Size,Depth,Literal),
+	size_coef(C1),
+	depth_coef(C2),
+	literal_coef(C3),
+	relevance_coef(C4),
+	get_start_no_clauses(ST),
+	Tmp1 is Size*C1,
+	floor(Tmp1, KK1),
+	Tmp2 is Depth*C2,
+	floor(Tmp2, KK2),
+	Tmp3 is Literal*C3,
+	floor(Tmp3, KK3),
+	Tmp4 is 4*C4,
+	floor(Tmp4, KK4),
+	maximum(KK1,KK2,Temp1),
+	maximum(Temp1,KK3,Temp2),
+	maximum(Temp2,KK4,Temp3),
+	WU is ST * Temp3.
+
+     compute_start_wu_1(Size,Depth,Literal) :-
+	bagof1(R,C^clause(sent_C(C),true,R),Rs),
+	compute_start_wu_1(Rs,Size,Depth,Literal).
+	
+     compute_start_wu_1([R|Rs],SO,DO,LO) :-
+	clause(sent_C(cl(_,_,by(Cn,_,_,_,_),_,_,_,_,_,_)),true,R),
+	max_clausesize_sp(Cn,S1),
+	clause_depth(Cn,D1),
+	length(Cn,L1),
+	compute_start_wu_2(Rs,S1,D1,L1,SO,DO,LO).
+
+     compute_start_wu_2([R|Rs],S1,D1,L1,SO,DO,LO) :-
+	clause(sent_C(cl(_,_,by(Cn,_,_,_,_),_,_,_,_,_,_)),true,R), 
+	max_clausesize_sp(Cn,SM1),
+	clause_depth(Cn,DM1),
+	length(Cn,LM),
+	maximum(S1,SM1,SN2),
+	maximum(D1,DM1,DN2),
+	maximum(L1,LM,LN2),
+	!,
+	compute_start_wu_2(Rs,SN2,DN2,LN2,SO,DO,LO).
+     compute_start_wu_2([],SO,DO,LO,SO,DO,LO).
+
+     get_start_no_clauses(ST) :-
+	start_no_clauses(ST), !.
+     get_start_no_clauses(ST) :-
+	start_no_clauses_ceof(X),
+	!, 
+	number_inclauses(IN),
+	ST is X * IN, !.
+     get_start_no_clauses(ST) :-
+	number_inclauses(IN),
+	ST is 3 * IN.

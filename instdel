@@ -1,0 +1,121 @@
+%%% INSTANCE DELETION
+%%%
+%%% Two options are provided:
+%%% delete_all_instances: If a clause C is an instance of another clause D,
+%%%	delete C.
+%%% delete_nf_instances: If a clause C is an instance of another clause D,
+%%%	then C is deleted if the following conditions hold:
+%%%	1. if C is not forward supported
+%%%	2. if C is user supported, then D is user supported
+%%%	3. if C is backward supported, then D is backward supported.
+%%% Apparently, both options can't be applied at the same time.
+%%% If both options are set, then delete_all_instances is in effect.
+%%%
+%%% Since we don't count ground literals for literal bound check,
+%%%	it is no longer true that literal_bound(1) will generate only
+%%%	unit clauses.
+%%%
+
+     inst_del :-
+	cputime(T1),
+     	inst_del_fail, 
+	cputime(T2),
+	T3 is T2 - T1,
+	write_line(5,'Instance Deletion(s): ',T3),
+	!, fail.
+
+     inst_del_fail :-
+	delete_all_instances,
+	instdel, !.
+     inst_del_fail :-
+	delete_nf_instances,
+	instdel, !.
+
+%%% If UR strategy is used, then no clauses are instances of another clauses,
+%%%	so we don't need to do instance deletion regardless of the settings.
+%%% If literal bound is set to 1, then we don't need to do instance deletion 
+%%%	regardless of the settings since no clauses are instances of another
+%%%	clauses.
+     instdel :-
+	current_support(sup(_,_,_,1)).
+     instdel :-
+	const_list(Clist),
+	instdel_1(Clist).
+
+%%% we assume that input clauses are not instances of any clause.
+%%% we take one clause sent_C, then check if it is deleted or not,
+%%%	if not, we put it as sent_c.
+     instdel_1(Clist) :-
+        clause(sent_C(cl(_,_,by([Ln11,Ln12|Lns1],V11,V11,Clist,_),0,
+                CS1,CR1,CT1,_,_)),true,Ref1), 
+        clause(sent_C(C2),true,Ref1), 
+	erase(Ref1),
+        instdel_ckinst([Ln11,Ln12|Lns1],CS1,CR1,CT1,C2),
+	fail.
+%%% copy sent_c to sent_C.
+     instdel_1(_) :-
+	sentc_to_sentC_z.
+
+     instdel_ckinst(Cn1,CS1,CR1,CT1,C1) :-
+	delete_all_instances,
+	instdel_ckinst_all(Cn1,CS1,CR1,CT1,C1), !.
+     instdel_ckinst(Cn1,CS1,CR1,CT1,C1) :-
+	delete_nf_instances,
+	instdel_ckinst_nf(Cn1,CS1,CR1,CT1,C1), !.
+
+%%% For delete_all_instances.
+     instdel_ckinst_all(Cn1,CS1,CR1,CT1,_) :-
+	instdel_cl_inst(Cn1,CS1,CR1,CT1).
+     instdel_ckinst_all(_,_,_,_,C1) :-
+	assertz(sent_c(C1)).
+
+%%% For delete_nf_instances.
+     instdel_ckinst_nf(Cn1,sp(S11,S12,0),CR1,CT1,_) :-
+	instdel_cl_inst(Cn1,sp(S11,S12,0),CR1,CT1).
+     instdel_ckinst_nf(_,_,_,_,C1) :-
+	assertz(sent_c(C1)).
+
+%%% Check if the given clause is an instance of any sent_C or sent_c.
+     instdel_cl_inst(Cn1,CS1,CR1,CT1) :-
+	sent_C(cl(_,_,by(Cn1,V21,V21,_,_),_,CS2,CR2,CT2,_,_)),
+	instdel_cl_inst_2('C',CS1,CR1,CT1,Cn1,CS2,CR2,CT2).
+     instdel_cl_inst(Cn1,CS1,CR1,CT1) :-
+	sent_c(cl(_,_,by(Cn1,V21,V21,_,_),_,CS2,CR2,CT2,_,_)),
+	instdel_cl_inst_2('c',CS1,CR1,CT1,Cn1,CS2,CR2,CT2).
+
+%%% If C is user supported and D is not, or C is backward supported and
+%%%	D is not, then we don't consider deletion.
+     instdel_cl_inst_2(_,sp(1,_,_),_,_,_,sp(0,_,_),_,_) :- !, fail.
+     instdel_cl_inst_2(_,sp(_,1,_),_,_,_,sp(_,0,_),_,_) :- !, fail.
+%%% The information in D should be changed by the information in C.
+     instdel_cl_inst_2(T,CS1,CR1,CT1,Cn1,CS2,CR2,CT2) :-
+	max_CS_ind(CS2,CS1,CS3,Up),
+	min_CR_ind(CR2,CR1,CR3,Up),
+	binary_max_ind(CT2,CT1,CT3,Up),
+	instdel_cl_inst_1(T,Up,Cn1,CS3,CR3,CT3).
+
+%%% No new information, do nothing.
+     instdel_cl_inst_1(_,n,_,_,_,_) :- !.
+%%% The information of D has to be changed.
+%%% For sent_C.
+     instdel_cl_inst_1('C',_,Cn1,CS3,CR3,CT3) :-
+	clause(sent_C(cl(_,_,by(Cn1,V21,V21,_,_),_,_,_,_,_,_)),
+		true,Ref2),
+	clause(sent_C(cl(CSize2,CN2,BY2,CI2,_,_,_,F2,pr(PS2,PD2,PL2,_,PX2))),
+		true,Ref2),
+	erase(Ref2),
+	priority_NewPR(CR3,PR3),
+	maximum(PR3,PX2,PX3),
+	assertz(sent_C(cl(CSize2,CN2,BY2,CI2,CS3,CR3,CT3,F2,
+		pr(PS2,PD2,PL2,PR3,PX3)))).
+%%% For sent_c.
+     instdel_cl_inst_1('c',_,Cn1,CS3,CR3,CT3) :-
+	clause(sent_c(cl(_,_,by(Cn1,V21,V21,_,_),_,_,_,_,_,_)),
+		true,Ref2),
+	clause(sent_c(cl(CSize2,CN2,BY2,CI2,_,_,_,F2,pr(PS2,PD2,PL2,_,PX2))),
+		true,Ref2),
+	erase(Ref2),
+	priority_NewPR(CR3,PR3),
+	maximum(PR3,PX2,PX3),
+	assertz(sent_c(cl(CSize2,CN2,BY2,CI2,CS3,CR3,CT3,F2,
+		pr(PS2,PD2,PL2,PR3,PX3)))).

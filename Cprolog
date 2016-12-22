@@ -1,0 +1,75 @@
+%%%
+%%% version 2.06.0
+%%%   initial version
+%%%   added garbage collect/0 for als and cprolog
+
+%%%
+%%% Specific code for Cprolog.
+%%%
+
+%%%
+%%% Cputime/1.
+%%%
+    cputime(X) :-
+      X is floor(cputime*1000)/1000.
+
+%%%
+%%% Floor/2.
+%%%
+    floor(X,Y) :-
+      Y is floor(X).
+
+%%%
+%%% Load_file/1.
+%%%
+    load_file(X) :-
+      [-X].
+
+%%%
+%%% Numbervars/3.
+%%%
+     numbervars('$VAR'(N),N,N1) :-
+	N1 is N + 1, !.
+     numbervars(Term,N1,N2) :-
+	nonvar(Term), functor(Term,F,N),
+	numbervars(0,N,Term,N1,N2).
+
+     numbervars(N,N,Term,N1,N1):- !.
+     numbervars(I,N,Term,N1,N3) :-
+	I < N,
+	I1 is I + 1,
+	arg(I1,Term,Arg),
+	numbervars(Arg,N1,N2),
+	numbervars(I1,N,Term,N2,N3).
+
+%%%
+%%% Initialization/1.
+%%%
+    initialization(X) :-
+      call(X),
+      !.
+
+%%%
+%%% Ttyflush/0.
+%%%
+    ttyflush.
+
+%%%
+%%% Append/3.
+%%%
+    append([],L,L).
+    append([H|T],L,[H|TL]) :- append(T,L,TL).
+
+%%%
+%%% Garbage_collect/0.
+%%%
+    garbage_collect.
+
+%%%
+%%% add binary operator in for set operation
+%%%
+    :- op(600,xfx,'in').
+    :- op(30,fx,[@]).
+    :- op(100,xfy,[&]).
+    :- op(120,xfy,[#]).
+    :- op(150,xfx,[=>,<=>]).

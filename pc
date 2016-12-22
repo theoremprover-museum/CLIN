@@ -1,0 +1,489 @@
+%%% PC prover
+%%%
+%%% Test of satisfiability based on the intelligent method.
+%%% intell_pc succeeds with flag of 'u' if the input set is unsatisfiable.
+%%% intell_pc succeeds with flag of 's' if the input set is satisfiable.
+%%% intell_pc can print out a model or relevant clauses.
+%%% The relevant clauses lists are maintained with delay merging technique.
+%%%
+%%% Three options are available:
+%%% tautology_rule: perform tautology deletion if it is set.
+%%% pure_literal_rule: perform pure literal deletion if it is set.
+%%% out_model_rc: print out model if the input is satisfiable.
+%%%               print out relevant clauses if the input is unsatisfiable.
+%%% Defaults are off.
+%%%
+
+     pcprove(Clauses) :-
+	intell_pc(Clauses,Result),
+	!, Result == u.
+
+%%% Update the accumulated pc time for statistics purpose.
+     update_pctime(TT3) :-
+	retract(pc_time(PCTIME)),
+	NEW_PCTIME is TT3 + PCTIME,
+	assert(pc_time(NEW_PCTIME)), !.
+     update_pctime(TT3) :-
+	assert(pc_time(TT3)), !.
+
+%%% 1. clear database for pc prover only.
+%%% 2. transform clause into internal form.
+%%% 3. solve the problem.
+%%% 4. print out a minimum subset of unsatisfiable clauses.
+     intell_pc(S,R) :-
+	cputime(TT1),
+	intell_pc_prover(S,R),
+	cputime(TT2),
+	TT3 is TT2 -TT1,
+	update_pctime(TT3),
+	write_line(5,'PC prover(s): ',TT3), !.
+
+     intell_pc_prover(S1,u) :-
+	clear_pc_database,
+	intell_pc_transform(S1,S2,PRS,Tag),
+	intell_pc_0(Tag,S2,PDS,PRS,[]),
+	pc_print_relevant_clauses(S1,PRS), !.
+     intell_pc_prover(_,s).
+
+     clear_pc_database :- !.
+
+%%% intell_pc_0 succeeds with dependent clause list if the input set 
+%%% is unsatisfiable.
+%%% intell_pc_0 fails with a model printed out if the input set 
+%%% is satisfiable.
+     intell_pc_0(Tag,_,_,_,_) :- Tag == unsat, !.
+     intell_pc_0(_,S1,PDS,PRS,PMS_In) :-
+	check_tautology_deletion(S1,S2),
+	!,
+	intell_pc_1(S2,PDS,PRS,PMS_In).
+
+%%% If the input list is empty, then satisfiable.
+%%% Otherwise, call one literal deletion.
+     intell_pc_1([],_,_,PMS_In) :- pc_print_model(PMS_In), !, fail.
+     intell_pc_1(S1,PDS,PRS,PMS_In) :-
+	one_literal_deletion(S1,S2,Tag,PDS,PRS,PMS_In,PMS_M), 
+	!,
+	intell_pc_2(Tag,S2,PDS,PRS,PMS_M).
+
+%%% If the input tag is unsat, return.
+%%% If the input list is empty, satisfiable.
+%%% Otherwise, go on.
+     intell_pc_2(Tag,_,_,_,_) :- Tag == unsat, !.
+     intell_pc_2(_,[],_,_,PMS_In) :- pc_print_model(PMS_In), !, fail.
+     intell_pc_2(_,S2,PDS,PRS,PMS_In) :-
+	intell_pc_2_1(S2,PDS,PRS,PMS_In).
+
+%%% Check to execute pure literal deletion.
+     intell_pc_2_1(S1,PDS,PRS,PMS_In) :-
+	check_pure_literal_deletion(S1,S2),
+	!,
+	intell_pc_3(S2,PDS,PRS,PMS_In).
+
+%%% If the input list is empty, satisfiable.
+%%% Otherwise, do case analysis.
+     intell_pc_3([],_,_,PMS_In) :- pc_print_model(PMS_In), !, fail.
+     intell_pc_3(S1,PDS,PRS,PMS_In) :-
+	!,
+	case_analysis(S1,PDS,PRS,PMS_In).
+
+%%% Delete tautologies if tautology_rule is set.
+     check_tautology_deletion(S1,S2) :-
+	tautology_rule,
+	tautology_deletion(S1,S2), !.
+     check_tautology_deletion(S1,S1).
+
+     tautology_deletion([prop(C1,_)|Cs1],S2) :-
+	tautology_clause(C1),
+	!,
+	tautology_deletion(Cs1,S2).
+     tautology_deletion([C1|Cs1],[C1|Cs2]) :-
+	!,
+	tautology_deletion(Cs1,Cs2).
+     tautology_deletion([],[]).
+
+%%% Transform a clause into another data structure which contains
+%%% clause itself, and a pair of dependent lists for literals and
+%%% clauses.
+%%% If the input set has an empty clause, then Tag is set unsat
+%%% and PRS is the number of the empty clause.
+     intell_pc_transform(S1,S2,PRS,Tag) :-
+	intell_pc_transform(S1,1,S2,PRS,Tag), !.
+     intell_pc_transform([[]|_],N,_,[N],unsat) :- !.
+     intell_pc_transform([C|Cs],N,[prop(C,([],N))|Gs],PRS,Tag) :-
+	NN is N + 1,
+	!, intell_pc_transform(Cs,NN,Gs,PRS,Tag).
+     intell_pc_transform([],_,[],_,_).
+
+%%% Suppose [Uc] is a unit clause. Delete all clauses containing Uc.
+%%% Delete all occurrences of not Uc from all clauses.
+%%% It is done recursively until all unit clauses are used.
+     one_literal_deletion(S1,S2,Tag,PDS,PRS,PMS_1,PMS_2) :-
+     	one_literal_deletion(S1,S1,S2,Tag,PDS,PRS,PMS_1,PMS_2).
+     one_literal_deletion([prop([Uc],Upac)|Cs1],S1,S2,Tag,
+		PDS,PRS,PMS_1,PMS_2) :-
+	one_literal_deletion_round(Uc,Upac,S1,Sm,Tag,PDS,PRS),
+	!,
+	one_literal_deletion_1(Tag,Sm,S2,PDS,PRS,[Uc|PMS_1],PMS_2).
+     one_literal_deletion([_|Cs1],S1,S2,Tag,PDS,PRS,PMS_1,PMS_2) :-
+	!,
+	one_literal_deletion(Cs1,S1,S2,Tag,PDS,PRS,PMS_1,PMS_2).
+     one_literal_deletion([],S2,S2,_,_,_,PMS,PMS).
+
+     one_literal_deletion_1(Tag,_,_,_,_,_,_) :- Tag == unsat, !.
+     one_literal_deletion_1(Tag,Sm,S2,PDS,PRS,PMS_1,PMS_2) :-
+	one_literal_deletion(Sm,Sm,S2,Tag,PDS,PRS,PMS_1,PMS_2).
+
+%%% Pick one unit clause [Uc], and do one literal deletion on the
+%%% input set with Uc.
+     one_literal_deletion_round(Uc,Upac,S1,S2,Tag,PDS,PRS) :-
+	negate(Uc,NUc),
+	one_literal_deletion_round(Uc,NUc,Upac,S1,S2,Tag,PDS,PRS).
+     one_literal_deletion_round(Uc,NUc,Upac,[C1|Cs1],S2,Tag,PDS,PRS) :-
+	one_literal_deletion_clause(Uc,NUc,Upac,C1,S2,Sm,Tag,PDS,PRS),
+	!,
+	one_literal_deletion_round_1(Tag,Uc,NUc,Upac,Cs1,Sm,PDS,PRS).
+     one_literal_deletion_round(_,_,_,[],[],_,_,_).
+
+     one_literal_deletion_round_1(Tag,_,_,_,_,_,_,_) :- Tag == unsat, !.
+     one_literal_deletion_round_1(Tag,Uc,NUc,Upac,Cs1,Sm,PDS,PRS) :-
+	one_literal_deletion_round(Uc,NUc,Upac,Cs1,Sm,Tag,PDS,PRS).
+
+%%% Delete the underlying clauses if it is subsumed.
+%%% Update the underlying clause if it is simplified.
+%%% Pass the underlying clause if nothing happens.
+     one_literal_deletion_clause(Uc,NUc,Upac,prop(C1,Cpac),S2,Sm,Tag,PDS,PRS) :-
+	one_literal_deletion_clause_1(Uc,NUc,C1,C2,Res,_),
+	!,
+	one_literal_deletion_clause_2(C2,Res,Upac,Cpac,S2,Sm,Tag,PDS,PRS).
+     one_literal_deletion_clause(_,_,_,C1,[C1|Sm],Sm,_,_,_) :- !.
+
+%%% Fails if nothing happens to the underlying clauses.
+%%% Return a flag of 'n' if the underlying clause is subsumed.
+%%% Return a variable flag if the underlying clause is simplified.
+     one_literal_deletion_clause_1(Uc,_,[Uc|_],d,n,_) :- !.
+     one_literal_deletion_clause_1(Uc,NUc,[NUc|Ls1],C2,Var1,s) :-
+	!,
+	one_literal_deletion_clause_1(Uc,NUc,Ls1,C2,Var1,s).
+     one_literal_deletion_clause_1(Uc,NUc,[L1|Ls1],[L1|Ls2],Var1,Var2) :-
+	!,
+     	one_literal_deletion_clause_1(Uc,NUc,Ls1,Ls2,Var1,Var2).
+     one_literal_deletion_clause_1(_,_,[],[],_,n) :- !, fail.
+     one_literal_deletion_clause_1(_,_,[],[],_,_).
+
+%%% Set Tag to be unsat if the simplified clause is empty.
+%%% Delete the underlying clauses if it is subsumed.
+%%% Update the underlying clause if it is simplified.
+     one_literal_deletion_clause_2([],_,(Utail,Nutail),(Ctail,Nctail),
+		_,_,unsat,PDS,PRS) :- 
+	merge(Utail,Ctail,PDS), 
+	check_pc_extract_numbers(Nutail,Nctail,PRS), !.
+     one_literal_deletion_clause_2(C2,s,(Utail,Nutail),(Ctail,Nctail),
+		[prop(C2,(Mtail,Mctail))|Sm],Sm,_,_,_) :-
+	merge(Utail,Ctail,Mtail), 
+	check_merge_expression(Nutail,Nctail,Mctail), !.
+     one_literal_deletion_clause_2(_,n,_,_,S2,S2,_,_,_) :- !.
+
+%%% Perform pure literal deletion if pure_literal_rule is set.
+     check_pure_literal_deletion(S1,S2) :-
+	pure_literal_rule,
+	pure_literal_deletion(S1,S2), !.
+     check_pure_literal_deletion(S1,S1).
+
+%%% Find pure literals first. 
+%%% Then delete all clauses containing one pure literal.
+     pure_literal_deletion(S1,S2) :-
+	find_pure_literals(S1,P1),
+	delete_pure_literals(P1,S1,S2).
+
+%%% Find all distinct literals first.
+%%% Then decide which are pure literals.
+     find_pure_literals(S1,P1) :-
+	find_literals(S1,L1),
+	find_pure_literals_1(L1,P1).
+
+     find_literals(S1,L1) :-
+	find_literals(S1,[],L1).
+     find_literals([prop(C,_)|Cs],A,L) :-
+	find_literals_clause(C,A,M),
+	!,
+	find_literals(Cs,M,L).
+     find_literals([],L,L).
+
+     find_literals_clause([L|Ls],A,M) :-
+	member(L,A),
+	!,
+	find_literals_clause(Ls,A,M).
+     find_literals_clause([L|Ls],A,M) :-
+	!,
+	find_literals_clause(Ls,[L|A],M).
+     find_literals_clause([],M,M).
+
+%%% Collect pure literals from the set of literals.
+     find_pure_literals_1([L|Ls],P) :-
+	not_pure_literal(L,Ls,Ls1),
+	!,
+	find_pure_literals_1(Ls1,P).
+     find_pure_literals_1([L|Ls],[L|P]) :-
+	!,
+	find_pure_literals_1(Ls,P).
+     find_pure_literals_1([],[]).
+
+%%% A literal is pure if it is not a complement to the other literal.
+     not_pure_literal(L,Ls,Ls1) :-
+	negate(L,NL),
+	!,
+	delete_and_rest(NL,Ls,Ls1).
+
+%%% Succeeds with the list with NL deleted.
+%%% Fails if NL is not a member of the input list.
+     delete_and_rest(NL,[NL|Ls],Ls) :- !.
+     delete_and_rest(NL,[L|Ls],[L|Ls1]) :-
+     	!, delete_and_rest(NL,Ls,Ls1).
+
+%%% Delete any clause containg one pure literal.
+%%% Pick one pure literal L, delete any clause containing L.
+%%% Then pick the next literal. Do iteratively until empty set.
+     delete_pure_literals([L|Ls],S1,S2) :-
+	delete_pure_literal(L,S1,Sm),
+	!,
+	delete_pure_literals(Ls,Sm,S2).
+     delete_pure_literals([],S2,S2).
+
+%%% Delete any clause containing L.
+     delete_pure_literal(L,[prop(C1,_)|Cs1],Sm) :-
+	member(L,C1),
+	!,
+	delete_pure_literal(L,Cs1,Sm).
+     delete_pure_literal(L,[C1|Cs1],[C1|Sm]) :-
+	!,
+	delete_pure_literal(L,Cs1,Sm).
+     delete_pure_literal(_,[],[]).
+
+%%% Pick a literal from the shortest negative clause and perform
+%%% case analysis if both positive and negative clauses exist. 
+%%% Otherwise print out model if requested and fails.
+     case_analysis(S1,PDS,PRS,PMS_In) :-
+	case_clause(S1,C1),
+	C1 = [L1|_],
+	negate(L1,NL1),
+	!,
+	affirmative_case(L1,NL1,S1,PDSa,PRSa,[L1|PMS_In]),
+	!,
+	check_negative_case(L1,NL1,PDSa,PRSa,S1,PDS,PRS,[NL1|PMS_In]).
+     case_analysis(S1,_,_,PMS_In) :-
+	out_model_rc,
+        find_model_clauses(S1,M1),
+        append(PMS_In,M1,M2),
+        pc_print_model_1(M2),
+	!, fail.
+
+     find_model_clauses([prop(List,_)|Cs1],[L|Ms]) :-
+	member(L,List),
+        negate(L,NL), 
+        reduce_set(L,NL,Cs1,Cs2,Tag,_,_),   
+	Tag \== unsat,
+        !, find_model_clauses(Cs2,Ms).    
+     find_model_clauses([],[]).
+
+%%% Find a clause for case analysis.
+     case_clause(S1,C1) :-
+	pn_clauseset(S1,C1).
+
+%%% pn_clauseset succeeds with the first smallest negative clause
+%%% if both positive and negative clauses exist.
+     pn_clauseset([prop(C,_)|Gs],Nc) :-
+	pn_clause(C,Var),!,
+	porn_clauseset(Var,Gs,C,Nc).
+     pn_clauseset([_|Gs],Nc) :-
+	!, pn_clauseset(Gs,Nc).
+
+%%% Succeeds if both positive and negative clauses are found.
+     porn_clauseset(n,Gs,C,Nc) :-
+	length(C,L), !,
+	p_clauseset(Gs,C,L,Nc), !.
+     porn_clauseset(p,Gs,_,Nc) :-
+	n_clauseset(Gs,Nc).
+	
+%%% Succeeds if a positive clause exists.
+%%% At the same time, find the first smallest negative clause.
+     p_clauseset([prop(C2,_)|Gs],C1,L1,Nc) :-
+	pn_clause(C2,Var), !,
+	p_clauseset_1(Var,Gs,C1,L1,C2,Nc), !.
+     p_clauseset([_|Gs],C1,L1,Nc) :-
+	!, p_clauseset(Gs,C1,L1,Nc).
+
+     p_clauseset_1(n,Gs,C1,2,_,Nc) :-
+	!,
+	p_clauseset(Gs,C1,2,Nc).
+     p_clauseset_1(n,Gs,C1,L1,C2,Nc) :-
+	length(C2,L2),
+	shorter_clause(C2,L2,C1,L1,C3,L3),
+	!,
+	p_clauseset(Gs,C3,L3,Nc).
+     p_clauseset_1(p,_,C1,2,_,C1) :- !.
+     p_clauseset_1(p,Gs,C1,L1,_,Nc) :-
+	shortest_negative_clause(Gs,C1,L1,Nc).
+
+%%% Find the first smallest negative clause.
+     shortest_negative_clause([prop(C2,_)|Gs],C1,L1,Nc) :-
+	negclause(C2),
+	length(C2,L2),
+	shortest_negative_clause_1(L2,Gs,C1,L1,C2,Nc), !.
+     shortest_negative_clause([_|Gs],C1,L1,Nc) :-
+	!,
+	shortest_negative_clause(Gs,C1,L1,Nc).
+     shortest_negative_clause([],Nc,_,Nc).
+
+     shortest_negative_clause_1(2,_,_,_,C2,C2) :- !.
+     shortest_negative_clause_1(L2,Gs,C1,L1,C2,Nc) :-
+	shorter_clause(C2,L2,C1,L1,C3,L3),
+	shortest_negative_clause(Gs,C3,L3,Nc).
+
+%%% Succeeds with the first smallest negative clause.
+     n_clauseset([prop(C1,_)|Gs],Nc) :-
+	pn_clause(C1,Var),
+	!,
+	n_clauseset_1(Var,Gs,C1,Nc), !.
+     n_clauseset([_|Gs],Nc) :-
+	!, n_clauseset(Gs,Nc).
+
+     n_clauseset_1(n,Gs,C1,Nc) :-
+	length(C1,L1),
+	n_clauseset_1_1(L1,Gs,C1,Nc), !.
+     n_clauseset_1(p,Gs,_,Nc) :-
+	!,
+	n_clauseset(Gs,Nc).
+
+     n_clauseset_1_1(2,_,C1,C1) :- !.
+     n_clauseset_1_1(L1,Gs,C1,Nc) :-
+	shortest_negative_clause(Gs,C1,L1,Nc).
+
+     shorter_clause(C1,L1,_,L2,C1,L1) :-
+	L1 < L2, !.
+     shorter_clause(_,_,C2,L2,C2,L2).
+
+%%% Perform affirmative case.
+     affirmative_case(L1,NL1,S1,PDSa,PRSa,PMS_In) :- 
+	test_set(L1,NL1,S1,PDSa,PRSa,PMS_In).
+
+%%% Perform negative case if the affirmative case depends on
+%%% affirmative assumption.
+%%% Otherwise, don't perform negative case and the dependent lists 
+%%% are those of affirmative case.
+     check_negative_case(L1,NL1,PDSa,PRSa,S1,PDS,PRS,PMS_In) :-
+	delete_and_rest(L1,PDSa,PDSaa),
+	!,
+	negative_case(L1,NL1,S1,PDSn,PRSn,PMS_In),
+	dependency_expansion(PDSaa,PRSa,NL1,PDSn,PRSn,PDS,PRS), !.
+     check_negative_case(_,_,PDSa,PRSa,_,PDSa,PRSa,_).
+
+%%% Perform negative case.
+     negative_case(L1,NL1,S1,PDSn,PRSn,PMS_In) :-
+	test_set(NL1,L1,S1,PDSn,PRSn,PMS_In).
+
+%%% The dependent lists are the union of dependent lists of
+%%% affirmative case and negative case if the negative case 
+%%% depends on the negative assumption.
+%%% Otherwise, the dependent lists are those of negative case.
+     dependency_expansion(PDSaa,PRSa,NL1,PDSn,PRSn,PDS,PRS) :-
+	delete_and_rest(NL1,PDSn,PDSnn),
+	merge(PDSaa,PDSnn,PDS), 
+	check_ordered_merge(PRSa,PRSn,PRS), !.
+     dependency_expansion(_,_,_,PDSn,PRSn,PDSn,PRSn).
+
+     test_set(L1,NL1,S1,PDS,PRS,PMS_In) :-
+	reduce_set(L1,NL1,S1,S2,Tag,PDS,PRS),
+	!,
+	test_set_1(Tag,S2,PDS,PRS,PMS_In).
+
+     test_set_1(Tag,_,_,_,_) :- Tag == unsat, !.
+     test_set_1(_,S1,PDS,PRS,PMS_In) :-
+	intell_pc_1(S1,PDS,PRS,PMS_In).
+
+%%% Perform reduction with assumption L.
+     reduce_set(L,NL,[prop(C1,Cpac)|Cs1],S2,Tag,PDS,PRS) :-
+	reduce_clause(L,NL,C1,C2,Var1),
+	!,
+	reduce_set_1(C2,Var1,Cpac,L,NL,Cs1,S2,Tag,PDS,PRS).
+     reduce_set(L,NL,[C1|Cs1],[C1|Cs2],Tag,PDS,PRS) :-
+	!,
+	reduce_set(L,NL,Cs1,Cs2,Tag,PDS,PRS).
+     reduce_set(_,_,[],[],_,_,_).
+
+     reduce_set_1([],_,(Ctail,Nctail),L,_,_,_,unsat,[L|Ctail],[Nctail]) :- !.
+     reduce_set_1(C2,s,(Ctail,Nctail),L,NL,Cs1,
+		[prop(C2,([L|Ctail],Nctail))|Cs2],Tag,PDS,PRS) :-
+	reduce_set(L,NL,Cs1,Cs2,Tag,PDS,PRS), !.
+     reduce_set_1(_,n,_,L,NL,Cs1,S2,Tag,PDS,PRS) :-
+	reduce_set(L,NL,Cs1,S2,Tag,PDS,PRS).
+
+%%% Fails if nothing happens to the underlying clause.
+%%% Succeeds with flag of 'n' if the underlying clause is subsumed.
+%%% Succeeds with variable flag if the underlying clause is simplified.
+     reduce_clause(L,NL,C1,C2,Var1) :-
+     	reduce_clause(L,NL,C1,C2,Var1,Var2).
+     reduce_clause(L,_,[L|_],-1,n,_) :- !.
+     reduce_clause(L,NL,[NL|Ls1],C2,Var1,s) :-
+	!, reduce_clause(L,NL,Ls1,C2,Var1,s).
+     reduce_clause(L,NL,[L1|Ls1],[L1|Ls2],Var1,Var2) :-
+	!, reduce_clause(L,NL,Ls1,Ls2,Var1,Var2).
+     reduce_clause(_,_,[],[],_,n) :- !, fail.
+     reduce_clause(_,_,[],[],_,_).
+
+%%% print out literals in PMS_In.
+     pc_print_model(PMS_In) :-
+	out_model_rc,
+	pc_print_model_1(PMS_In), !.
+     pc_print_model(_).
+
+     pc_print_model_1(PMS_In) :-
+	write_line(5,'Model:'),
+	print_clause_list(PMS_In), !.
+
+%%% don't care about relevant clauses list if out_model_rc is not asserted.
+     check_pc_extract_numbers(Nutail,Nctail,PRS) :-
+	out_model_rc,
+	pc_extract_numbers(mr(Nutail,Nctail,X1),PRS), !.
+     check_pc_extract_numbers(_,_,_).
+
+%%% don't care about relevant clauses list if out_model_rc is not asserted.
+     check_merge_expression(Nutail,Nctail,Mctail) :-
+	out_model_rc,
+	Mctail = mr(Nutail,Nctail,X1), !.
+     check_merge_expression(_,_,_).
+
+%%% don't care about relevant clauses list if out_model_rc is not asserted.
+     check_ordered_merge(PRSa,PRSn,PRS) :-
+	out_model_rc,
+	ordered_merge(PRSa,PRSn,PRS), !.
+     check_ordered_merge(_,_,_).
+
+%%% extract the clause numbers and print out them.
+     pc_print_relevant_clauses(S1,Z2) :-
+	out_model_rc,
+	write_line(5,'PC relevant clauses:'),
+	print_ordered_clauses(Z2,S1), !.
+     pc_print_relevant_clauses(_,_).
+
+     pc_extract_numbers(mr(X,Y,Z),Z) :-
+	nonvar(Z), !.
+     pc_extract_numbers(mr(X,Y,Z),Z) :-
+	pc_extract_numbers(X,Z1),
+	pc_extract_numbers(Y,Z2),
+	ordered_merge(Z1,Z2,Z), !.
+     pc_extract_numbers(X,[X]).
+
+%%% Print out clauses in order specified in a list.
+     print_ordered_clauses(N2,S1) :-
+	print_ordered_clauses(N2,1,S1).
+     print_ordered_clauses([N|Ns],N,[C|Cs]) :-
+	write_numberedline_head(10,N,'.'),
+	write_line(2,C),
+	NN is N + 1,
+	!,
+	print_ordered_clauses(Ns,NN,Cs).
+     print_ordered_clauses(Ns,N,[C|Cs]) :-
+	NN is N + 1,
+	!,
+	print_ordered_clauses(Ns,NN,Cs).
+     print_ordered_clauses([],_,_).

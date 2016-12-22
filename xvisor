@@ -1,0 +1,298 @@
+%%% XVISOR
+%%%
+%%% This is an expert system for the prover.
+%%% The top level supervisor is intended to help users to run their 
+%%% problems without knowing details about the prover.
+%%%
+%%% The following is the language for users of this expert system:
+%%%	problem_list.
+%%%	...
+%%%	end.
+%%%
+%%% The following is the language for experts:
+%%%	expert_rule(support_list(S))
+%%%	expert_rule(time_limit_coef(F))
+%%% 	expert_rule(literal_bound(L))
+%%%
+%%% The algorithm is the following:
+%%%	read in problems in an unsolved list UL
+%%%	set T = least_time_bound
+%%%	make SL empty
+%%%	while T =< greatest_time_bound
+%%%		while we have next strategy S
+%%%			while we have unsolved problem P in UL
+%%%				solve P with S within T
+%%%				if P is solved
+%%%				then delete P from UL and put P in SL
+%%%			endwhile
+%%%			if UL is empty
+%%%			then print out 'all done' and return
+%%%		endwhile
+%%%		T = 2*T
+%%%	endwhile
+%%%	print out solved problems in SL and unsolved problems in UL
+
+%%% Two modes are provided for top level supervisor:
+%%%	batch mode: To use it, set(super_batch) should be executed.
+%%%		A file containing a list of problems and commands
+%%%		is the only argument of prove(_).
+%%%		The list of problems are listed as follows:
+%%%		prove(prob1).
+%%%		prove(prob2).
+%%%		...
+%%%		prove(probn).
+%%%	real time mode: the problem to be solved is the only argument of
+%%%		prove(_). Users can use assign_cmd(least_time_bound,V) and
+%%%		assign_cmd(greatest_time_bound,V) to set up the time bounds.
+%%%	Default is real time mode.
+%%%
+%%% If a strategy is not complete and it caused a satisfiable result
+%%%	for a problem P, then we don't consider this strategy with 
+%%%	increased time bound afterwards for P.
+%%%
+%%% If a problem P failed with errors too_many _input_variables or
+%%%	format_error_input_file, then P is removed from the unsolved
+%%%	problem list.
+%%%
+%%% If user doesn't specify necessary clauses for u, o, or n support
+%%%	for a problem P, we don't deal with this here.
+%%%	The prover would fail at interpretation before trying to prove
+%%%	P.
+%%%
+
+%%% Clear database for supervisor.
+%%% Set initial values for supervisor.
+%%% Read problem list.
+%%% Set initial time limit.
+%%% Try to solve all problems.
+%%% Reset option values.
+     xvisor(File) :-
+	not(not(xvisor_clear)),
+	not(not(xvisor_set)),
+	not(not(xvisor_read_problems(File))),
+	not(not(set_initial_time_limit)),
+	solve_all_problems,
+	reset_options, !.
+
+%%% Clear database for supervisor.
+     xvisor_clear :-
+	abolish(no_try,2),
+	abolish(prob_tried_round0,2),
+	abolish(solved_prob,1),
+	abolish(tried_round0,1),
+	abolish(unsolved_prob,1), !.
+
+%%% Set options.
+     xvisor_set :- 
+	set(slidepriority),
+	assign_cmd(small_proof_size_bound,100), !.
+
+%%% If batch mode, the problem are listed in the given file.
+     xvisor_read_problems(File) :-
+	super_batch, !,
+	read_and_assert_problems_file(File), !.
+%%% If not batch mode, the given file is the problem itself.
+     xvisor_read_problems(File) :-
+	assertz(unsolved_prob(File)),
+	assertz(prob_tried_round0(File,0)).
+
+%%% Read in problem lists and assert useful information.
+     read_and_assert_problems_file(File) :-
+	seeing(Input),
+	see(File), !,
+	interp_problems_file,
+	seen,
+	see(Input).
+
+%%% Interpret the commands in the input file.
+     interp_problems_file :-
+	read(Term),
+     	Term \== 'end_of_file', !,
+	interp_problems_file(Term), !,
+     	interp_problems_file.
+     interp_problems_file.
+
+%%% unsolved problems are stored in two forms:
+%%%	unsolved_prob(P)
+%%%	prob_tried_round0(P,X)
+%%% X is for controlling the execution of round 0.
+%%% If a problem P is executed once in a time limit T, then X is set to 1.
+%%% So round 0 won't be executed thereafter with other strategies in T.
+%%% X should be reset for all unsolved problems if the time limit is 
+%%% increased.
+     interp_problems_file(prove(P)) :-
+	assertz(unsolved_prob(P)), 
+	assertz(prob_tried_round0(P,0)), !.
+     interp_problems_file(Term) :-
+	write_line(5,'ERROR: Wrong input -> ',Term), !, fail.
+
+%%% Set initial time limit as least time bound.
+     set_initial_time_limit :-
+	least_time_bound(T),
+	assign_cmd(time_limit,T).
+
+%%% Try all problems in one strategy, then next strategy.
+%%% If there are unsolved problems when all strategies are tried,
+%%% increase the time limit, and try again from the first strategy and
+%%% first unsolved problem.
+%%% solve_all_problems will stop if either time limit is advanced 
+%%% and is greater than greatest time bound, or all problems are solved.
+     solve_all_problems :-
+	next_strategy(S),
+	solve_problems_strategy(S), 
+	print_success_message, !.
+     solve_all_problems :-
+	next_time_limit,
+	reset_tried_round0, !,
+	solve_all_problems.
+     solve_all_problems :-
+	write_line(5,'Solved problems:'),
+	print_solved_problems,
+	write_line(5,'Unsolved problems:'),
+	print_unsolved_problems.
+
+%%% If solve_problems_strategy succeeds and there are still unsolved 
+%%% 	problems, then something must be wrong.
+     print_success_message :-
+	unsolved_prob(_),
+	write_line(5,'ERROR: Something must be wrong.'), !.
+%%% Otherwise, all problems are solved.
+     print_success_message :-
+	write_line(5,'All problems solved.').
+
+%%% Try with next strategy.
+     next_strategy(S) :-
+	expert_rule(R),
+	what_expert_rule(R,S).
+
+%%% Execute rules until support strategy.
+     what_expert_rule(support_list(S),S) :-
+	assign_cmd(support_list,S), !.
+     what_expert_rule(X,_) :-
+	X =.. [F,A],
+	assign_cmd(F,A), !, fail.
+     what_expert_rule(_,_) :-
+	fail.
+
+%%% Try all unsolved problems one by one with a certain strategy.
+     solve_problems_strategy(S) :-
+	unsolved_prob(P),
+	\+ no_try(P,S),
+	hk_tried_round0(P),
+	write_line(5,'Try: ',P),
+	solve_one_problem(P), !.
+     solve_problems_strategy(_) :-
+	unsolved_prob(_), !, fail.
+     solve_problems_strategy(_).
+
+%%% If prove_1 fails, check if there is an error or no user support 
+%%% 	clauses if user support strategy is specified.
+     solve_one_problem(P) :-
+	\+ not(not(prove_1(P))),
+	!,
+	analyze_failure(P).
+%%% If prove_1 succeeds, check if the problem was proved or not,
+%%%	and update information accordingly.
+     solve_one_problem(P) :-
+	hk_problem(P), !,
+	fail.
+
+     analyze_failure(P) :-
+	error('too_many_input_variables'),
+	remove_problem(P), !, fail.
+     analyze_failure(P) :-
+	error('Syntactic error in input file !'),
+	remove_problem(P), !, fail.
+
+%%% Set tried_round0 properly for the next problem to be tried.
+     hk_tried_round0(P) :-
+	abolish(tried_round0,1),
+	prob_tried_round0(P,X),
+	assert(tried_round0(X)), !.
+
+%%% If the problem is solved, move it to solved_problem list.
+%%% Otherwise, update the tried_round0 status for tried problems.
+     hk_problem(P) :-
+	stop_this_problem(P),
+	remove_problem(P), !.
+     hk_problem(P) :-
+	update_tried_round0(P), !.
+	
+     remove_problem(P) :-
+	retract(unsolved_prob(P)),
+	retract(prob_tried_round0(P,_)),
+	assertz(solved_prob(P)).
+
+%%% If the problem is proved, or if the problem is satisfiable and
+%%% the strategy used was a complete strategy.
+     stop_this_problem(P) :-
+	prove_result(unsatisfiable), !.
+     stop_this_problem(P) :-
+	support_list(Sup), !,
+	prove_result(satisfiable),
+	!, process_satisfiable_case(P,Sup).
+
+%%% If the strategy is complete, then the problem was solved.
+%%% Otherwise, delete all such strategies.
+     process_satisfiable_case(_,Sup) :-
+	complete_strategy(Sup), !.
+     process_satisfiable_case(P,Sup) :-
+	assert(no_try(P,Sup)), !, fail.
+
+%%% Update tried_round0 information for the problem to avoid executing
+%%% round 0 more than once in a certain time limit.
+     update_tried_round0(P) :-
+	prob_tried_round0(P,1), !.
+     update_tried_round0(P) :-
+	retract(prob_tried_round0(P,_)),
+	assert(prob_tried_round0(P,1)).
+
+%%% Update time_limit.
+%%% If time_limit is greater than greatest_time_bound, fails.
+     next_time_limit :-
+	time_limit(T),
+	get_time_limit_multiple(F),
+	T2 is F*T,
+	greatest_time_bound(GT), !,
+	T2 =< GT, 
+	assign_cmd(time_limit,T2), !.
+	
+     get_time_limit_multiple(F) :-
+	time_limit_multiple(F), !.
+     get_time_limit_multiple(2).
+	
+%%% Reset the tried_round0 status for all unsolved problems,
+%%% so that round 0 will be executed for new time_limit.
+     reset_tried_round0 :-
+	abolish(prob_tried_round0,2),
+	reset_tried_round0_1.
+
+     reset_tried_round0_1 :-
+	unsolved_prob(P),
+	assert(prob_tried_round0(P,0)),
+	fail.
+     reset_tried_round0_1.
+
+%%% Print out solved problems.
+     print_solved_problems :-
+	retract(solved_prob(P)),
+	write_line(10,P), 
+	fail.
+     print_solved_problems.
+
+%%% Print out unsolved problems.
+     print_unsolved_problems :-
+	retract(unsolved_prob(P)),
+	retract(prob_tried_round0(P,_)),
+	write_line(10,P), 
+	fail.
+     print_unsolved_problems.
+
+%%% Reset options to default values.
+     reset_options :-
+	clear(slidepriority),
+	assign_cmd(small_proof_size_bound,100),
+	assign_cmd(support_list,[b,f]),
+	assign_cmd(literal_bound,0),
+	assign_cmd(time_limit,2000),
+	abolish(time_limit_coef,1).

@@ -1,0 +1,405 @@
+%%% LIBRARY SECTION
+%%%
+%%% LINEARIZATION
+%%%
+%%% linearize_term creates a linearized version of a term i.e.
+%%% linearize_term(p(X,X),p(X,V),[X],[V])
+%%% call at top level by linearize_term(Term,X,Y,Z).
+%%% To make possible fast unification
+%%% using Prolog's built in unification without occurs check.
+
+     linearize_term(Term, Term, [], []) :-
+	numbervars(Term,0,0), !.
+     linearize_term(Term, Newterm, Vars1, Vars2) :-
+	linearize(Term, Newterm, [], [], Oldvars, Newvars),
+	pairs(Oldvars, Newvars, Vars1, Vars2, Vars3), !.	
+
+%%% Makes use of predicate linearize, with arguments as follows:
+%%% linearize(Input_term, Linearized_version, Previous_oldvars,
+%%%	Previous_linearized_vars, New_oldvars, New_linearized_vars)
+%%% so linearize(p(X,X),p(U,V),[],[],[X,X],[U,V])
+%%% call at top level by linearize(Input_term, Y, [], [], U, V).
+%%% generate a new variable S after the first time a
+%%% variable is seen.
+     linearize(R,S,O1,O2,[R|O1],[S|O2]) :- 
+	var(R), identical_member(R,O1), !.
+%%% don't generate a new variable S.
+     linearize(R,R,O1,O2,[R|O1],[R|O2]) :- var(R), !.
+     linearize(R,S,Old1,Old2,New1,New2) :-
+	R =.. [F|Rlist],
+	linearize2(Rlist,Slist,Old1,Old2,New1,New2),
+	S =.. [F|Slist].
+
+     linearize2([],[],Old1,Old2,Old1,Old2) :- !.
+     linearize2([R|Rlist],[S|Slist],Old1,Old2,New1,New2) :-
+	linearize(R,S,Old1,Old2,Mid1,Mid2),!,
+	linearize2(Rlist,Slist,Mid1,Mid2,New1,New2).
+
+%%% pairs takes two lists and finds matching variables.  For
+%%% example, pairs([X,X,Y],[X1,X2,X3],[X1],[X2],[X]).  This
+%%% makes use of the lists returned by linearize.
+     pairs([X|L1],[Y|L2],[Y|Z1],[W|Z2],V) :- 
+	identical_member(X,L1), !,
+	firstmatch(X,L1,L2,W),
+	pairs(L1,L2,Z1,Z2,Z3),
+	remove_duplicates([X|Z3],V).
+
+     pairs([X|L1],[Y|L2],Z1,Z2,Z3) :- 
+	pairs(L1,L2,Z1,Z2,Z3).
+     pairs([],[],[],[],[]).
+
+     firstmatch(X,[Y|L1],[Z|L2],Z) :- 
+	X==Y,!.
+     firstmatch(X,[Y|L1],[Z|L2],W) :-
+	firstmatch(X,L1,L2,W).
+
+%%% rename a variable if an identical one exists.
+     remove_duplicates([X|Y],[U|Y]) :-  
+	identical_member(X,Y), !.			
+     remove_duplicates(X,X).
+
+%%% unify two lists.
+     unify_lists([], []) :- !.		
+     unify_lists([X|XRest], [Y|YRest]) :-
+	unify(X, Y), !,
+	unify_lists(XRest, YRest).
+
+%%% Occurs check.
+     occurs_check(Term, Var) :-
+	var(Term), !, Term \== Var.
+     occurs_check(Term, Var) :-
+	functor(Term, _, Arity),
+	occurs_check(Arity, Term, Var).
+
+     occurs_check(0, _, _) :- !.
+     occurs_check(N, Term, Var) :-
+	arg(N, Term, Arg),
+	occurs_check(Arg, Var),
+	M is N-1, !,
+	occurs_check(M, Term, Var).
+
+%%% unify with occurs check. 
+     unify(X,Y) :- X == Y, !.
+     unify(X,Y) :- unify1(X,Y), !.
+
+     unify1(X, Y) :-			
+	var(X), var(Y), !, X = Y.	
+     unify1(X, Y) :- 
+	var(X), !, occurs_check(Y, X), X = Y.
+     unify1(X, Y) :- 
+	var(Y), !, occurs_check(X, Y), Y = X.
+     unify1(X, Y) :- 
+	atomic(X), !, X = Y.
+     unify1(X, Y) :-
+	functor(X, F, N), functor(Y, F, N),
+	unify1(N, X, Y).
+
+     unify1(0, X, Y) :- !.
+     unify1(N, X, Y) :- 
+	arg(N, X, Xn), arg(N, Y, Yn),
+	unify(Xn, Yn),
+	M is N-1, !,
+	unify1(M, X, Y).
+
+
+%%% separate Nth element and the rest from a list.
+     retrieve_N(L,NN,X,Rest) :-		
+	retrieve_N(L,1,NN,X,Rest), !.
+     retrieve_N([L|Ls],N1,N2,X,[L|Rs]) :-
+	N1 < N2,
+	NN is N1 + 1,
+	!,
+	retrieve_N(Ls,NN,N2,X,Rs).
+     retrieve_N([L|Ls],N,N,L,Ls).
+
+%%% separate Nth element and the rest from two lists.
+     retrieve_N2(L1,L2,NN,X,Xs,Y,Ys) :-
+	retrieve_N2(L1,L2,1,NN,X,Xs,Y,Ys), !.
+     retrieve_N2([L1|Ls1],[L2|Ls2],N1,N2,X,[L1|Xs],Y,[L2|Ys]) :-
+	N1 < N2,
+	NN is N1 + 1,
+	!,
+	retrieve_N2(Ls1,Ls2,NN,N2,X,Xs,Y,Ys).
+     retrieve_N2([L1|Ls1],[L2|Ls2],N,N,L1,Ls1,L2,Ls2).
+
+%%% find a member.
+     member(X,[X|_]).			
+     member(X,[_|Ys]) :- member(X,Ys).
+
+%%% find an identical member.
+     identical_member(X,[Y|Z]) :- X == Y,!.
+     identical_member(X,[Y|Z]) :- identical_member(X,Z).
+
+%%% find a member and the rest.
+     member_N([X|Xs],X,Xs).		
+     member_N([X|Xs],Y,[X|Zs]) :-
+	member_N(Xs,Y,Zs).
+
+%%% append two lists together.
+%     append([],Y,Y) :- !.
+%     append([X|Xs],Y,[X|Zs]) :- append(Xs,Y,Zs).
+
+%%% delete all the occurrences in a list.
+     delete_all(X,[X|Ys],Z) :- 		
+	!,
+	delete_all(X,Ys,Z).
+     delete_all(X,[Y|Ys],[Y|Z]) :-
+	delete_all(X,Ys,Z).
+     delete_all(_,[],[]).
+
+%%% merge with duplicate deletion.
+     merge([X|Xs],Y,Z) :-
+	member(X,Y),
+	!,
+	merge(Xs,Y,Z).
+     merge([X|Xs],Y,[X|Zs]) :-
+	!,
+	merge(Xs,Y,Zs).
+     merge([],Z,Z).
+
+%%% merge of two ordered lists with duplicate deletion.
+     ordered_merge([X|XR],[X|YR],[X|Z]) :-
+	!,
+	ordered_merge(XR,YR,Z).
+     ordered_merge([X|XR],[Y|YR],[X|Z]) :-
+	X < Y,
+	!,
+	ordered_merge(XR,[Y|YR],Z).
+     ordered_merge([X|XR],[Y|YR],[Y|Z]) :-
+	!,
+	ordered_merge([X|XR],YR,Z).
+     ordered_merge([],Y,Y) :- !.
+     ordered_merge(X,[],X).
+
+%%% get the minumum of two values.
+     minimum(X,Y,Y) :- Y =< X, !.	% red cut.
+     minimum(X,Y,X).
+
+%%% get the maximum of two values.
+     maximum(X,Y,Y) :- Y >= X, !.	% red cut.
+     maximum(X,Y,X).
+
+%%% calculate the size of a term.
+%%% constants: counted as 1.
+%%% varaibles: counted as 1.
+%%% functiors: counted as 1 plus the size of all its arguments.
+%%% predicates: counted as 1 plus the size of all its arguments.
+     term_size(Term,Size) :-		
+	term_size(Term,0,Size), !.
+     term_size(Term,Size1,Size2) :-
+	atomic(Term), !, Size2 is Size1 + 1.
+     term_size(Term,Size1,Size2) :-
+	var(Term), !, Size2 is Size1 + 1.
+     term_size(Term,Size1,Size2) :-
+	functor(Term,F,N),
+	SizeM is Size1 + 1,
+	args_size(Term,0,N,SizeM,Size2).
+
+     args_size(Term,N1,N2,SizeI,SizeO) :-
+	NN is N1 + 1,
+	NN =< N2,
+	arg(NN,Term,Arg),
+	term_size(Arg,SizeI,SizeM),
+	!,
+	args_size(Term,NN,N2,SizeM,SizeO).
+     args_size(Term,N,N,SizeO,SizeO).
+
+%%% term_depth is to calculate the number of nesting levels of a term.
+%%% constants: counted as 0.
+%%% variables: counted as 0.
+%%% functors: counted as 1 plus the maximum depth of its arguments.
+%%% predicates: counted as 1 plus the maximum depth of its arguments.
+     term_depth(X,0) :- var(X), !.
+     term_depth(X,0) :- atomic(X), !.
+     term_depth(X,D) :-
+	X =.. [F|Args],
+	arg_depth(Args,0,Darg),
+	D is Darg + 1, !.
+     arg_depth([A1|As],Din,Dout) :-
+	term_depth(A1,D1),
+	maximum(Din,D1,D2), !,
+	arg_depth(As,D2,Dout).
+     arg_depth([],D,D).
+
+/*
+%%% Numbering the variables in a term.
+%%% The numbered term is then a ground term.
+     numbervars('$'(N),N,N1) :-
+	N1 is N + 1, !.
+     numbervars(Term,N1,N2) :-
+	nonvar(Term), functor(Term,F,N),
+	numbervars(0,N,Term,N1,N2).
+
+     numbervars(N,N,Term,N1,N1):- !.
+     numbervars(I,N,Term,N1,N3) :-
+	I < N,
+	I1 is I + 1,
+	arg(I1,Term,Arg),
+	numbervars(Arg,N1,N2),
+	numbervars(I1,N,Term,N2,N3).
+*/
+
+%%% Find the biggest number in a list.
+%%% max_list fails if the list is empty.
+     max_list([P|Ps],M) :- max_list(Ps,P,M), !.
+     max_list([P2|Ps],P1,M) :-
+	P2 > P1, !,
+	max_list(Ps,P2,M).
+     max_list([_|Ps],P1,M) :-
+	!, max_list(Ps,P1,M).
+     max_list([],M,M).
+
+%%% Compute distinct variable list of a term with a left-over dummy variable.
+%%% 	The left-over dummy variable is used to unify with unequally long
+%%%	conatant list.
+%%% For example, the list for g(X,f(a,Y)) is [X,Y|Z].
+
+     vars_tail(Term,Vars) :-
+	vars_tail(Term,[],_,Vars,Hole), !.
+
+     vars_tail(Term, Sofar_in, Sofar_in,Hole,Hole) :- atomic(Term), !.
+     vars_tail(Term, Sofar_in, Sofar_in,Hole,Hole) :- var(Term),
+     	identical_member(Term, Sofar_in), !.
+     vars_tail(Term, Sofar_in, [Term|Sofar_in],[Term|Hole],Hole) :-
+  	var(Term), !.
+     vars_tail(Term, Sofar_in,Sofar_out,Vars,Hole) :-
+	functor(Term, _, N),
+	vars_tail(0,N,Term,Sofar_in,Sofar_out,Vars,Hole).
+
+     vars_tail(N,N,_,S,S,Hole,Hole) :- !.
+     vars_tail(N1,N2,Term,Sofar_in,Sofar_out,Vars,Hole) :-
+	M is N1+1,
+	arg(M,Term,Arg),
+	vars_tail(Arg,Sofar_in,Sofar_mid,Vars,Hole1),
+	!,
+	vars_tail(M,N2,Term,Sofar_mid,Sofar_out,Hole1,Hole).
+
+
+%%% copy a term without using assert and retract.
+     new_copy(R,S) :- new_copy(R,S,[],O).
+
+     new_copy(R,R,O1,O1) :-
+	atomic(R), !.
+     new_copy(R,S,O1,O1) :-
+	var(R), memcopy(R,O1,S), !.
+     new_copy(R,S,O1,[vp(R,S)|O1]) :-
+	var(R), !.
+     new_copy(R,S,O1,O2) :-
+	R =.. [F|Rlist],
+	new_copy2(Rlist,Slist,O1,O2),
+	S =.. [F|Slist].
+
+     new_copy2([],[],O1,O1) :- !.
+     new_copy2([R|Rlist],[S|Slist],O1,O2) :-
+	new_copy(R,S,O1,M1), !,
+	new_copy2(Rlist,Slist,M1,O2).
+
+     memcopy(R,[vp(S,T)|_],T) :- R == S, !.
+     memcopy(R,[_|Ys],T) :- memcopy(R,Ys,T).
+
+
+%%% remove "not" if there is one, add one if there is not.
+     negate(not(X),X) :- !.   		
+     negate(X,not(X)).  		
+
+%%% return [] if bagof fails.
+     bagof1(X,G,C) :-			
+	bagof(X,G,C), !.
+     bagof1(_,_,[]).
+
+%%% check if a term is a list.
+     is_list([_|_]) :- !.
+     is_list([]).
+
+%%% remove all duplicates in a list.
+     delete_all_duplicates([X|Xs],[X|Ys]) :-
+	delete_all(X,Xs,Z),
+	!,
+	delete_all_duplicates(Z,Ys).
+     delete_all_duplicates([],[]).
+
+%%% Make an ordinal list for a list. If a list has N members, then the
+%%% ordinal list is [1,...,N].
+     corresp_ordinals_list(List,OrdList) :-
+	corresp_ordinals_list(List,1,OrdList), !.
+     corresp_ordinals_list([_|Ls],N1,[N1|Os]) :-
+	N2 is N1 + 1, !,
+	corresp_ordinals_list(Ls,N2,Os).
+     corresp_ordinals_list([],_,[]).
+
+%%% The list contains of |C| L2's, and one L1's at Nth position.
+     list_one_N(C,L2,N,L1,List) :-
+	list_one_N(C,L2,1,N,L1,List), !.
+     list_one_N([_|Lits],L2,N2,N2,L1,[L1|List]) :-
+	NN is N2 + 1,
+	!, list_one_N(Lits,L2,NN,N2,L1,List).
+     list_one_N([_|Lits],L2,N1,N2,L1,[L2|List]) :-
+	NN is N1 + 1,
+	!, list_one_N(Lits,L2,NN,N2,L1,List).
+     list_one_N([],_,_,_,_,[]).
+
+%%% The output contains of |C| binary numbers, and the content in positions
+%%%	specified by the list L are N2, the others are N1.
+     list_multi_Ns(C,N1,L,N2,List) :-
+	list_multi_Ns(C,N1,1,L,N2,List), !.
+     list_multi_Ns([_|Lits],N1,N,[N|L],N2,[N2|List]) :-
+	NN is N + 1,
+	!, list_multi_Ns(Lits,N1,NN,L,N2,List).
+     list_multi_Ns([_|Lits],N1,N,L,N2,[N1|List]) :-
+	NN is N + 1,
+	!, list_multi_Ns(Lits,N1,NN,L,N2,List).
+     list_multi_Ns([],_,_,_,_,[]).
+
+%%% The list contains |C| L2's.
+     list_of_Ns([_|Lits],L2,[L2|List]) :-
+	!, list_of_Ns(Lits,L2,List).
+     list_of_Ns([],_,[]).
+
+%%% A list of natural numbers from 1 to N.
+     list_of_natural_numbers_up_to_N(N,Un) :-
+	list_of_natural_numbers_up_to_N(1,N,Un), !.
+     list_of_natural_numbers_up_to_N(N1,N2,[N1|Un]) :-
+	N1 < N2, 
+	NN is N1 + 1, !, 
+	list_of_natural_numbers_up_to_N(NN,N2,Un).
+     list_of_natural_numbers_up_to_N(N1,N1,[N1]) :- !.
+     list_of_natural_numbers_up_to_N(_,_,[]).
+
+%%% Succeeds if the input ground clause is a tautology.
+     tautology_clause(C) :-
+	append(_,[X|T],C),
+	negate(X,Y),
+	member(Y,T), !.
+
+%%% Succeeds if the input first-order clause is a tautology.
+     fol_tautology_clause(C) :-
+	append(_,[X|T],C),
+	negate(X,Y),
+	identical_member(Y,T), !.
+
+%%% return 1 if unit, otherwise 0.
+     decide_unit([_],1) :- !.
+     decide_unit(_,0) :- !.
+
+%%% Assert X once.
+     assert_once(X) :-
+     	X, !.
+     assert_once(X) :-
+  	assert(X), !.
+
+%%% Negate all literals in a clause.
+     negate_clause([D1|Ds1],[D2|Ds2]) :-
+	negate(D1,D2),
+	!, negate_clause(Ds1,Ds2).
+     negate_clause([],[]).
+
+%%% Logically erase a clause.
+     logically_erase(Proc,Ref) :-
+	assertz(logically_erased(Proc,Ref)).
+
+%%% Physically erase the logically erased clauses of a procedure.
+     physically_erase(Proc) :-
+	retract(logically_erased(Proc,Ref)),
+	erase(Ref),
+	fail.
+     physically_erase(_).

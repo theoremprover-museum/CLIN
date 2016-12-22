@@ -1,0 +1,141 @@
+%%% Y is the definition of X
+     interp_1_define(X,Y) :-
+	pre_skolem(X,Y,X1,Y1,V), % find implicitly universally quantified vars.
+	define_part((X1=>Y1),V,[not(X1)],1), % X1 is the distinguished literal.
+	define_part((Y1=>X1),V,[X1],0). % X1 is still the distinguished literals
+	
+%%% pre_skolem(X,Y,F): Find implicitly universally quantified variables.
+%%%		       Make sure each variables is in the scope of only one
+%%%		       quantifier. Removing implications. 
+%%% 
+     pre_skolem(X,Y,X1,Y1,F) :-
+	renamevars(X,X1,[],F0,[]),
+	renamevars(Y,Y1,F0,F,[]).
+
+%%% renamevars(X,X1,Vlist,NewVlist,QL): X is transformed to X1 to make sure that
+%%%				        each variable is introduced by only one
+%%%				        variable. Vlist is the list of 
+%%%					unquantified variables, NewVlist is the
+%%%					new list of unquantified variables.
+%%%					QL contains quantified variables.
+%%%					Every variable in Vlist will be assumed
+%%%					universally quantified.
+    renamevars(X,X,Vlist,Vlist,Q) :-
+	var(X),
+	(identical_member(X,Q); 
+	 identical_member(X,Vlist)),	% defined in file `library'
+	!.
+    renamevars(X,X,Vlist,[X|Vlist],Q) :-
+	var(X),!.
+    renamevars(all(X,P),all(X1,P1),Vlist,NVlist,Q) :-
+	!,
+	%gensym('X',X1),
+	subst(X,X1,P,P2),
+	renamevars(P2,P1,Vlist,NVlist,[X1|Q]).
+    renamevars(exists(X,P),exists(X1,P1),Vlist,NVlist,Q) :-
+	!,
+	%gensym('X',X1),
+	subst(X,X1,P,P2),
+	renamevars(P2,P1,Vlist,NVlist,[X1|Q]).
+    renamevars(X,X1,Vlist,NVlist,Q) :-
+	functor(X,F,N),
+	renamevars1(X,X2,N,1,Vlist,NVlist,Q),
+	X1=..[F|X2].
+
+%%% 
+    renamevars1(_,[],N,M,Vlist,Vlist,Q) :-
+	M>N,
+	!.
+    renamevars1(X,[A1|A2],N,M,Vlist,NVlist,Q) :-
+	arg(M,X,A),
+	renamevars(A,A1,Vlist,NV1,Q),
+	M1 is M+1,
+	renamevars1(X,A2,N,M1,NV1,NVlist,Q).
+	 
+%%% define_part(Formula,Vlist,Dis_Head): Formula is to be skolemized and to 
+%%%					 generate replace rules. Vlist is the 
+%%%					 list of variables appearing in Formula
+%%%					 but not quantified. Dis_Head is the
+%%%					 ditinguished literal. Flag says
+%%%					 if repeated or once replace rules
+%%%					 are generated, and if the literal in
+%%%					 Dis_Head is used.
+    define_part(Formula,Vlist,Dist_Head,Flag) :-
+	quantified(Formula,Vlist,NewFormula),
+	skolemizing(NewFormula,L),
+	do_replace(L,Dist_Head,Flag).
+
+%%% quantified(Formula, V, NewFormula): Add universal quantification to Formula
+%%%					according to variable list V. The
+%%%					resulting formula is NewFormula.
+    quantified(Formula,[],Formula).
+    quantified(Formula,[V|L],NewFormula) :-
+	quantified(all(V,Formula),L,NewFormula). 	    	
+
+%%% skolemizing(X, Clauses): skolemizing formula X, the resulting clauses are
+%%% 			     in list Clauses.
+%%%			     Slightly different from `translate' in skolem.
+%%%			     The resulting clauses are passed back instead of
+%%%			     printing out.
+    skolemizing(X,Clauses) :-
+	abolish(current_num,2),
+	implout(X,X1),            /* removing implications                 */
+	negin(X1,X2),             /* moving negation inwards               */
+	skolem(X2,X3,[]),         /* skolemizing                           */
+	univout(X3,X4),           /* moving universal quantifiers outwards */
+	conjn(X4,X5),             /* distributing `&' over `#'             */
+	clausify(X5,[],L),  	  /* putting into clauses                  */
+	to_clauses(L,Clauses).
+
+%%% do_replace(L,D_Lit,Flag): L is the list of skolemized clauses. D_List 
+%%%			      contains the distinguished literal, Flag
+%%%			      indicated if repeat replace rules will be 
+%%%			      generated.
+    do_replace([],_,_).
+    do_replace([H|T],D_List,1) :-  % D_List is used, repeat rules.
+	member(H,D_List,0,F),
+	read_replaces_1_2(H,F,[],clause,u),
+writeq(H), write(','),writeq(F),nl,
+	do_replace(T,D_List,1).
+    do_replace([H|T],D_List,0) :-
+	member(H,D_List,0,F),
+	read_replaces_1_2(H,F,[],clause,u),
+writeq(H), write(','),writeq(F),nl,
+	do_replace(T,D_List,0).
+
+%%%
+    member([],_,_,[]).
+    member([H|T],D,N,[N1|F]) :-
+	N1 is N+1,
+	identical_member(H,D), !,
+	member(T,D,N1,F).
+    member([H|T],D,N,F) :-
+	N1 is N+1,
+	member(T,D,N1,F).
+
+%%%
+    to_clauses([],[]).
+    to_clauses([cl(A,B)|Cs],[Cl|Cls]) :-
+	clauses(A,B,Cl),
+	to_clauses(Cs,Cls).
+
+%%%
+    clauses(L,[],C) :-
+	!,
+	cdisj(L,C).
+    clauses([],L,C) :-
+	conj(L,C).
+    clauses(L1,L2,C) :-
+	cdisj(L1,C1),
+	conj(L2,C2),
+	append(C1,C2,C).
+
+%%%
+    cdisj([L],[L]) :- !.
+    cdisj([L|Ls], [L|Cs]) :-
+	cdisj(Ls,Cs).
+
+%%%
+    conj([L],[not(L)]) :- !.
+    conj([L|Ls],[not(L)|Cs]) :-
+	conj(Ls,Cs).

@@ -1,0 +1,47 @@
+%%% CLAUSIFY
+%%%
+%%% sprfn_to_clause:
+%%% Transform a clause form in implication form to a general form.
+%%%	head and body are separated by :- or equivalent operators.
+%%%
+
+%%% Declare the precedence of operators.
+     :- op( 1200, xfx, [ : ]).
+     :- op( 1200, xfx, [ :-- ]).
+     :- op( 1200, xfx, [ :-. ]).
+
+%%% Transform one clause each time.
+%%% Head and body are separated by :-.
+     sprfn_to_clause((X :- Y),C) :-
+	make_and_list(Y, L1),
+	make_or_list(X, L2),
+	append(L2,L1,C), !.
+%%% Head and body are separated by :--.
+     sprfn_to_clause((X :-- Y),C) :-
+	make_and_list(Y, L1),
+	make_or_list(X, L2),
+	append(L2,L1,C), !.
+%%% Head and body are separated by :-..
+     sprfn_to_clause((X :-. Y),C) :-
+	make_and_list(Y, L1),
+	make_or_list(X, L2),
+	append(L2,L1,C), !.
+%%% positive clause.
+     sprfn_to_clause(X,C) :-
+	make_or_list(X, C).
+
+%%% Transform the body into a list.
+     make_and_list((X,Y),Z) :-
+	make_and_list(X,Z1),
+	make_and_list(Y,Z2),
+	append(Z1,Z2,Z), !.
+     make_and_list(true,[]) :- !.
+     make_and_list(X,[Y]) :- negate(X,Y).
+
+%%% Transform the head into a list.
+     make_or_list((X,Y),Z) :-
+	make_or_list(X,Z1),
+	make_or_list(Y,Z2),
+	append(Z1,Z2,Z), !.
+     make_or_list(false,[]) :- !.
+     make_or_list(X,[X]).

@@ -1,0 +1,478 @@
+%%%
+%%%                                    Skolem
+%%%
+%%%                           A First-Order Skolemizer
+%%%
+%%%           Appendix B of 'Programming in Prolog' by Clocksin and Mellish
+%%%
+%%%	      Steps:
+%%%	      1. Removing implications
+%%%           2. Moving negation inwards
+%%%	      3. Skolemizinig
+%%%           4. Moving Universal Quantifiers Outwards
+%%%           5. Distributing `&' over `#'
+%%%           6. Putting into clauses
+%%%	      7. Printing out clauses
+
+
+%%% operator declarations. -> and <-> have been changed to `=>' and `<=>' to
+%%% avoid conflicts with built-in functors.
+%%%	
+%%% @:   negation        `~' is pre-defined in ALS Prolog
+%%% &:   and
+%%% #:   or
+%%% =>:  implication
+%%% <=>: equivalent
+%%%
+%    :- op(30,fx,[@]).
+%    :- op(100,xfy,[&]).
+%    :- op(120,xfy,[#]).
+%    :- op(150,xfx,[=>,<=>]).
+
+%%% Standard `append'.
+%%%
+%    append([X|L1],L2,[X|L3]) :- append(L1,L2,L3).
+%    append([],L,L).
+
+%%% Well known `member'.
+%%%
+%    member(X,[Y|_]) :-
+%      X==Y,
+%      !.
+%    member(X,[_|Y]) :-
+%      !,
+%      member(X,Y).
+
+%%% Handle file input. F: file name.
+%%%
+    s(F) :-
+      cputime(S),
+      exists(F),
+      see(F),
+      s0(1),
+      seen,
+      cputime(E),
+      T is E-S,
+      write('execution time: '),
+      write(T),
+      write(' seconds'),
+      nl.
+    s(_) :-
+      seen,
+      write('s failed'),
+      nl.
+
+%%% Read input from input file, which can be either a file or user input.
+%%% end_of_file is read while end of file is encounter or user types '^D'.
+%%% N record the sequential number of formulas.
+%%%
+    s0(N) :-
+      read(F),
+      F\=='end_of_file',
+      !,
+      write('Formula '),
+      write(N),
+      write(':'),
+      nl,
+      translate(F),
+      N1 is N+1,
+      !,
+      s0(N1).
+    s0(_).
+
+%%% Interface to do skolemization by accepting user input.
+%%%
+%%%
+    skolem :-
+      nl,nl,nl,nl, tab(30),
+      write('SKOLEMIZER'),nl,nl,nl,
+      tab(13),write('-- from "Programming in Prolog" by Clocksin & Mellish'),nl,
+      nl, nl,
+      tab(5),
+      write('This program reads First Order Logic well-formed formulas (wff)'),nl,
+      tab(5),
+      write('using the following standard notation:'), nl,
+      tab(10), write('@ as associative prefix not'), nl,
+      tab(10), write('& as left associative infix and'), nl,
+      tab(10), write('# as left associative infix or'), nl,
+      tab(10), write('=> as imply, no associativity'), nl,
+      tab(10), write('<=> as equivalence, no associativity'), nl,
+      tab(10), write('all(x,A) as universal quatifier binding x in A'),nl,
+      tab(10), write('exists(x,A) as existential quantifier binding x in A'),nl,
+      tab(5),
+      write('and produces skolemized vesion of wff.'), nl, nl,
+      inputloop.
+
+%%% Loop to read in user input and generate skolemized ouput.
+%%%
+%%%
+    inputloop :-
+      nl,nl,nl,
+      write('Input your formula (followed by ".") to proceed, or "quit." to exit'),nl,
+      write('>'),
+      read(Formula),
+      (Formula==quit,!;
+       nl, write('The result clauses are:'),nl,nl,
+       translate(Formula), nl,nl,
+       inputloop).
+
+
+
+%%% Top level program listed in Appendix B of Clocksin/Mellish's Prolog text.
+%%%
+    translate(X) :-
+      abolish(current_num,2),	
+      renamevars(X,X0),		
+      implout(X0,X1),		/* removing implications                 */
+      negin(X1,X2),		/* moving negation inwards 	 	 */
+      skolem(X2,X3,[]),		/* skolemizing                      	 */
+      univout(X3,X4),		/* moving universal quantifiers outwards */
+      conjn(X4,X5),		/* distributing `&' over `#'             */
+      clausify(X5,[],Clauses),	/* putting into clauses 		 */
+      pclauses(Clauses).	/* printing out clauses			 */
+
+%%% Rename variables. To make sure that the same variable is never introduced
+%%% by more than one quantifier.
+%%%
+%%% Note that `gensym' generates *atoms* (X1, X2, etc) instead of variables.
+%%% If the output of this program is to be used by other programs, predicate
+%%% gensym('X',X1) should be commented out. Thus X1 will be a totally new
+%%% variables.
+%%%
+    renamevars(X,X) :-
+      var(X),
+      !.
+    renamevars(all(X,P),all(X1,P1)) :-
+      !,
+      gensym('X',X1),
+      subst(X,X1,P,P2),
+      renamevars(P2,P1).
+    renamevars(exists(X,P),exists(X1,P1)) :-
+      !,
+      gensym('X',X1),
+      subst(X,X1,P,P2),
+      renamevars(P2,P1).
+    renamevars(X,X1) :-
+      functor(X,F,N),
+      renamevars1(X,X2,N,1),
+      X1=..[F|X2].
+
+%%%
+    renamevars1(_,[],N,M) :-
+      M>N,
+      !.
+    renamevars1(X,[A1|A2],N,M) :-
+      arg(M,X,A),
+      renamevars(A,A1),
+      M1 is M+1,
+      renamevars1(X,A2,N,M1).
+
+%%% Removing implications.
+%%%
+%%% implout(X,Y): Y is the formula derived from X by removing implications. 
+%%%
+    implout((P <=> Q),((P1 & Q1) # (@(P1) & @(Q1)))) :-
+      !,
+      implout(P,P1),
+      implout(Q,Q1).
+    implout((P => Q),(@(P1) # Q1)) :-
+      !,
+      implout(P,P1),
+      implout(Q,Q1).
+    implout(all(X,P),all(X,P1)) :-
+      !,
+      implout(P,P1).
+    implout(exists(X,P),exists(X,P1)) :-
+      !,
+      implout(P,P1).
+    implout((P & Q),(P1 & Q1)) :-
+      !,
+      implout(P,P1),
+      implout(Q,Q1).
+    implout((P # Q),(P1 # Q1)) :-
+      !,
+      implout(P,P1),
+      implout(Q,Q1).
+    implout((@(P)),(@(P1))) :-
+      !,
+      implout(P,P1).
+    implout(P,P).
+
+%%% Moving negation inwards
+%%%
+%%% negin(X,Y): Y is the formula derived by applying the `negation inwards'
+%%%		transformation to the whole of X.
+%%%
+    negin((@(P)),P1) :-
+      !,
+      neg(P,P1).
+    negin(all(X,P),all(X,P1)) :-
+      !,
+      negin(P,P1).
+    negin(exists(X,P),exists(X,P1)) :-
+      !,
+      negin(P,P1).
+    negin((P & Q),(P1 & Q1)) :-
+      !,
+      negin(P,P1),
+      negin(Q,Q1).
+    negin((P # Q),(P1 # Q1)) :-
+      !,
+      negin(P,P1),
+      negin(Q,Q1).
+    negin(P,P).
+
+%%% neg(X,Y): Y is the formula derived by applying the transformation to the
+%%%	      formula @X.
+%%%
+    neg((@(P)),P1) :-
+      !,
+      negin(P,P1).
+    neg(all(X,P),exists(X,P1)) :-
+      !,
+      neg(P,P1).
+    neg(exists(X,P),all(X,P1)) :-
+      !,
+      neg(P,P1).
+    neg((P & Q),(P1 # Q1)) :-
+      !,
+      neg(P,P1),
+      neg(Q,Q1).
+    neg((P # Q),(P1 & Q1)) :-
+      !,
+      neg(P,P1),
+      neg(Q,Q1).
+    neg(P,(@(P))).
+
+%%% Skolemizing
+%%%
+%%% skolem(X,Y,V): X is the original formula, Y is the transformed formula,
+%%%		   and V is the list of variables that have been introduced
+%%%		   so far by universal quantifiers.
+%%%		   Skolem functions begin with `$'. This is to avoid conflict
+%%%		   input functions. However, a safe way is to check explicitly.
+%%%
+    skolem(all(X,P),all(X,P1),Vars) :-
+      !,
+      skolem(P,P1,[X|Vars]).
+    skolem(exists(X,P),P2,Vars) :-
+      !,
+      gensym($,F),	/* skolem functions begin with `$'. This is to avoid */
+      Sk =.. [F|Vars],  /* conflict with input functions.	             */
+      subst(X,Sk,P,P1),
+      skolem(P1,P2,Vars).
+    skolem((P # Q),(P1 # Q1),Vars) :-
+      skolem(P,P1,Vars),
+      skolem(Q,Q1,Vars).
+    skolem((P & Q),(P1 & Q1),Vars) :-
+      skolem(P,P1,Vars),
+      skolem(Q,Q1,Vars).
+    skolem(P,P,_).
+
+%%% gensym(X,Y): Y is X concatenated with a number. This is to generate skolem
+%%% 		 constants. Note that we make skolem functions have functor
+%%%		 generate from `gensym'.
+%%%
+    gensym(Root,Atom) :-
+      get_num(Root,Num),
+      name(Root,Name1),
+      name(Num,Name2),
+      append(Name1,Name2,Name),
+      name(Atom,Name).
+
+%%%
+    get_num(Root,Num) :-
+      retract(current_num(Root,Num1)),
+      !,
+      Num is Num1+1,
+      asserta(current_num(Root,Num)).
+    get_num(Root,1) :-
+      asserta(current_num(Root,1)).
+
+%%%
+    subst(V1,V2,P,V2) :-
+      P==V1,
+      !.
+    subst(_,_,P,P) :-
+      var(P),
+      !.
+    subst(V1,V2,all(X,P),all(X,P)) :-
+      X==V1,
+      !.
+    subst(V1,V2,all(X,P),all(X,P1)) :-
+      !,
+      subst(V1,V2,P,P1).
+    subst(V1,V2,exists(X,P),exists(X,P)) :-
+      X==V1,
+      !.
+    subst(V1,V2,exists(X,P),exists(X,P1)) :-
+      !,
+      subst(V1,V2,P,P1).
+    subst(V1,V2,P,P1) :-
+      functor(P,F,N),
+      subst1(V1,V2,P,P2,N,1),
+      P1=..[F|P2].
+
+%%%
+    subst1(_,_,_,[],N,M) :-
+      M>N,
+      !.
+    subst1(V1,V2,P,[A1|P1],N,M) :-
+      arg(M,P,A),
+      subst(V1,V2,A,A1),
+      M1 is M+1,
+      subst1(V1,V2,P,P1,N,M1).
+
+%%%
+    univout(all(X,P),P1) :-
+      !,
+      univout(P,P1).
+    univout((P & Q),(P1 & Q1)) :-
+      !,
+      univout(P,P1),
+      univout(Q,Q1).
+    univout((P # Q),(P1 # Q1)) :-
+      !,
+      univout(P,P1),
+      univout(Q,Q1).
+    univout(P,P).
+
+%%%
+    conjn((P # Q),R) :-
+      !,
+      conjn(P,P1),
+      conjn(Q,Q1),
+      conjn1((P1 # Q1),R).
+    conjn((P & Q),(P1 & Q1)) :-
+      !,
+      conjn(P,P1),
+      conjn(Q,Q1).
+    conjn(P,P).
+
+%%%
+    conjn1(((P & Q) # R),(P1 & Q1)) :-
+      !,
+      conjn((P # R),P1),
+      conjn((Q # R),Q1).
+    conjn1((P # (Q & R)),(P1 & Q1)) :-
+      !,
+      conjn((P # Q),P1),
+      conjn((P # R),Q1).
+    conjn1(P,P).
+
+%%%
+    clausify((P & Q),C1,C2) :-
+      !,
+      clausify(P,C1,C3),
+      clausify(Q,C3,C2).
+    clausify(P,Cs,[cl(A,B)|Cs]) :-
+      inclause(P,A,[],B,[]),
+      not(dupclause(cl(A,B),Cs)),
+      !.
+    clausify(_,C,C).
+
+%%%
+    dupclause(cl(A1,B1),[cl(A2,B2)|_]) :-
+      seteq(A1,A2),
+      seteq(B1,B2),
+      !.
+    dupclause(cl(A,B),[_|Cs]) :- dupclause(cl(A,B),Cs).
+    dupclause(_,[]) :- fail.
+
+%%%
+    seteq(S1,S2) :-
+      length(S1,N1),
+      length(S2,N2),
+      N1==N2,
+      seteq1(S1,S2).
+
+%%%
+    seteq1([X|S1],S2) :-
+      identical_member(X,S2),	% to match identical members.
+      seteq1(S1,S2).
+    seteq1([],S2).
+     
+%%%
+    inclause((P # Q),A,A1,B,B1) :-
+      !,
+      inclause(P,A2,A1,B2,B1),
+      inclause(Q,A,A2,B,B2).
+    inclause((@(P)),A,A,B1,B) :-
+      !,
+      notin(P,A),
+      putin(P,B,B1).
+    inclause(P,A1,A,B,B) :-
+      notin(P,B),
+      putin(P,A,A1).
+
+%%%
+    notin(X,[Y|_]) :-
+      X==Y,
+      !,
+      fail.
+    notin(X,[_|L]) :-
+      !,
+      notin(X,L).
+    notin(_,[]).
+
+%%%
+    putin(X,[],[X]) :- !.
+    putin(X,[Y|L],[Y|L]) :-
+      X==Y,
+      !.
+    putin(X,[Y|L],[Y|L1]) :- putin(X,L,L1).
+
+%%%
+    pclauses([]) :-
+      !,
+      write('  no clauses'),
+      nl,
+      nl.
+    pclauses(Cs) :- pclauses1(Cs).
+
+%%%
+    pclauses1([]) :-
+      !,
+      nl.
+    pclauses1([cl(A,B)|Cs]) :-
+      pclause(A,B),
+      nl,
+      pclauses1(Cs).
+
+%%%
+    pclause(L,[]) :-
+      !,
+      write('  ['),
+      pdisj(L),
+      write('].').
+    pclause([],L) :-
+      write('  ['),
+      pconj(L),
+      write('].').
+    pclause(L1,L2) :-
+      write('  ['),
+      pdisj(L1),
+      write(', '),
+      pconj(L2),
+      write('].').
+
+%%%
+    pdisj([L]) :-
+      !,
+      write(L).
+    pdisj([L|Ls]) :-
+      write(L),
+      write(', '),
+      pdisj(Ls).
+
+%%%
+    pconj([L]) :-
+      !,
+      write('not('),
+      write(L),
+      write(')').
+    pconj([L|Ls]) :-
+      write('not('),
+      write(L),
+      write('), '),
+      pconj(Ls).

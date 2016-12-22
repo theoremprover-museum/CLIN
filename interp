@@ -1,0 +1,450 @@
+%%% INTERPRETER
+%%%
+%%% This is an interpreter to 
+%%% 	1. read the input clauses
+%%%	2. transform the input clauses into internal clause format
+%%%	3. read in the commaneds in the input file and execute them
+%%%	4. set supported information for clauses
+%%%	5. Initialize distances
+%%%
+%%% Interp fails in the following cases:
+%%% 	Read erroneous commands
+%%%	No user support clauses if user support strategy is specified.
+%%%
+%%% For axioms:
+%%%	axiom_list(sprfn|clause)
+%%% For replace rules:
+%%%	replace_list
+%%% For weights:
+%%%	weight_list
+%%% For set of support:
+%%%	set_of_support.
+%%%	
+%%% There are 5 errors that make this procedure fail.
+%%%	too_many_input_variables
+%%%	no_unit_clauses_with_oorr_support
+%%%	no_user_clauses_with_uorn_support
+%%%	no_neg_clauses_with_n_support
+%%%	format_error_input_file
+%%%
+%%% Separate replace rules into two sets.
+%%%		repeated_replace_rules.
+%%%		rules.
+%%%		end.
+%%%		once_replace_rules.
+%%%		rules.
+%%%		end.
+%%%
+%%% Add context literals.
+%%%	The input replace rule is C,F,X.
+%%%	where C is the claues, F is the distingusihed literal flags, 
+%%%		and X is the context literal flags.
+%%%
+
+     interp :- not(not(interp_fail)).
+
+     interp_fail :-
+	cputime(TT1),
+	file_name(File),
+	seeing(Input),
+	see(File), !,
+	abolish(neg_clause_with_n_support,0),
+	!, interp_0(Input),
+	seen,
+	see(Input),
+	cputime(TT2),
+	TT3 is TT2 - TT1,
+	nl,
+	write_line(5,'interp(s): ',TT3), !.
+
+     interp_0(Input) :-
+	interp_1, !.
+%%% If interp fails abnormally, close the file and return to the 
+%%%	original input stream.
+     interp_0(Input) :-
+	seen,
+	see(Input), !, fail.
+
+%%% Read until end_of_input.
+     interp_1 :-
+	read(Term),
+	Term \== end_of_input, !,
+	interp_1(Term), !,
+	interp_1.
+%%% Provide support information.
+     interp_1 :-
+	process_supportset.
+
+%%% Call different procedures according to the input commands.
+     interp_1(axiom_list(Type)) :-
+	!, read_axioms(0,Type), !.
+     interp_1(weight_list) :-
+	!, interp_1_weight, !.
+     interp_1(repeated_replace_rules(X)) :-
+	!, interp_1_replace(X,u), !.
+     interp_1(once_replace_rules(X)) :-
+	!, interp_1_replace(X,o), !.
+     interp_1(define(X,Y)) :-		% Y is the definition of X
+	!, interp_1_define(X,Y), !.	% in file `define'.
+     interp_1(set_of_support) :-
+	!, read_usersupportset.
+     interp_1(set(X)) :-
+     	!, interp_1_command(set(X)), !.
+     interp_1(clear(X)) :-
+	!, interp_1_command(clear(X)), !.
+     interp_1(assign(X,V)) :-
+	!, interp_1_command(assign_cmd(X,V)), !.
+     interp_1(delete(X,V)) :-
+	!, interp_1_command(delete(X,V)), !.
+     interp_1(Term) :-
+	assert_print_error('Syntactic error in input file !'), !, fail.
+
+%%% Ignore weight settings if not user control.
+     interp_1_weight :-
+	user_control, !,
+	read_weights, !.
+     interp_1_weight :-
+        read_till_end.
+
+%%% Ignore replace settings if not user control.
+     interp_1_replace(X,T) :-
+	user_control, !,
+	read_replaces(X,T), !.
+     interp_1_replace(_,_) :-
+        read_till_end.
+
+%%% read till end command.
+     read_till_end :-
+        read(X),
+        X \== end,
+	!, read_till_end.
+     read_till_end.
+ 
+%%% Ignore commands if not user control.
+     interp_1_command(X) :-
+	user_control, !,
+	X, !.
+     interp_1_command(_).
+
+%%% Read in input clauses.
+     read_axioms(N,Type) :-
+	read(Term),
+	!, read_axioms_1(Term,N,Type).
+
+%%% Read in axioms one by one and transforms them into semi-internal form.
+     read_axioms_1(end,N,_) :- 
+	assert(number_inclauses(N)), !.
+     read_axioms_1(Term,N1,Type) :-
+	clause_format(Type,Term,Clause), !,
+	semi_internal_form(Clause,C),
+	assertz(sent_C(C)), 
+	N2 is N1 + 1, !,
+	read_axioms(N2,Type).
+
+%%% Transform an input formula into clause form.
+     clause_format(clause,P,P) :-
+	is_list(P), !.
+     clause_format(sprfn,Line,P) :-
+	\+ is_list(Line),
+	sprfn_to_clause(Line,P), !.
+     clause_format(_,_,_) :-
+	assert_print_error('Syntactic error in input file !'), !, fail.
+
+%%% Transform a clause into a semi-internal form.
+%%% If the number of variables in an input clause is greater than 
+%%%	 the number of constants in a specified list, then fail.
+     semi_internal_form(Clause,cl(CV1,CSize1,
+		by(Cn1,V11,V12,V1,W1))) :-
+	linearize_term(Clause,Cn1,V11,V12),
+	vars_tail(Clause,V1),
+	!,
+	check_input_numbervars(V1),
+	clause_size(Clause,CSize1),
+	vars_literals(Clause,W1),
+	compute_V_lits(W1,0,CV1).
+
+     check_input_numbervars(V1) :-
+     	check_numbervars(V1,'Number of variables overflows in input clauses !'), !.
+     check_input_numbervars(V1) :-
+	assert_print_error('too_many_input_variables'), !, fail.
+
+%%% Compute a list of variables for each literal.
+     vars_literals([L|Ls],[W|Ws]) :-
+	vars_tail(L,W), !,
+	vars_literals(Ls,Ws).
+     vars_literals([],[]).
+
+%%% Read in weights and assert into database.
+     read_weights :-
+	read(Term),
+	read_weights_1(Term).
+
+     read_weights_1(end) :- !.
+     read_weights_1((Type,Term,W)) :-
+	L =.. [Type,Term,W],
+	assertz(L), !,
+	read_weights.
+
+%%% Read in replace rules and assert into database.
+     read_replaces(X,T) :-
+	read(Term), !,
+	read_replaces_1(Term,X,T).
+
+     read_replaces_1(end,_,_) :- !.
+     read_replaces_1((C,F,X),Type,T12) :-
+	read_replaces_1_2(C,F,X,Type,T12),
+	!, read_replaces(Type,T12).
+     read_replaces_1((C,F),Type,T12) :-
+	read_replaces_1_2(C,F,[],Type,T12),
+	!, read_replaces(Type,T12).
+
+     read_replaces_1_2(C,F,X,Type,T12) :-
+	clause_format(Type,C,Clause), !,
+	vars_tail(Clause,V1),
+	!,
+	check_input_numbervars(V1),
+	vars_literals(Clause,W1),
+	list_multi_Ns(Clause,0,F,1,Flags),
+	list_multi_Ns(Clause,0,X,1,Contexts),
+	read_replaces_1_1(T12,Clause,V1,W1,Flags,Contexts).
+
+     read_replaces_1_1(u,Clause,V1,W1,Flags,Contexts) :-
+	assertz(replace_rule_1(Clause,V1,W1,Flags,Contexts)), !.
+     read_replaces_1_1(o,Clause,V1,W1,Flags,Contexts) :-
+	assertz(replace_rule_2(Clause,V1,W1,Flags,Contexts)), !.
+
+%%% 1. Read in user support sets.
+%%% 2. delete any duplicates.
+%%% 3. sort the list.
+%%% 4. assert it into database.
+     read_usersupportset :-
+	read_usersupportset(S1),
+	delete_all_duplicates(S1,S2),
+	sort(S2,S3),
+	assert(user_supportset(S3)).
+
+     read_usersupportset(U) :-
+	read(N), !,
+	read_usersupportset_1(N,U).
+
+     read_usersupportset_1(end,[]) :- !.
+     read_usersupportset_1(N1,[N1|U]) :-
+     	read_usersupportset(U).
+
+%%% Process support strategies and provide support informations.
+     process_supportset :-
+	support_list(User),
+	check_supplist(User),
+	!,
+	support_info.
+
+%%% Transform user defined support specs into internal support form.
+     check_supplist(User) :-
+	name_list(User,Name),
+	legal_supplist(Name),
+	transf_supplist(Name,Int),
+	abolish(support_list_internal,1),
+	assert(support_list_internal(Int)), !.
+     check_supplist(User) :-
+	assert_print_error('Syntactic error in input file !'), !, fail.
+	
+%%% Transform an atom to a list of integers.
+     name_list([U|Us],[N|Ns]) :-
+	name(U,N), !,
+	name_list(Us,Ns).
+     name_list([],[]).
+
+%%% Check if the support strategies specified are legal.
+     legal_supplist([N|Ns]) :-
+	legal_suppitem(N), !,
+	legal_supplist(Ns).
+     legal_supplist([]).
+
+     legal_suppitem([T|Ts]) :-
+	content_suppvalue([T]), !,
+	legal_suppitem(Ts).
+     legal_suppitem([]).
+
+%%% Specify legal support strategies.
+     content_suppvalue("u").
+     content_suppvalue("b").
+     content_suppvalue("f").
+     content_suppvalue("r").
+     content_suppvalue("n").
+     content_suppvalue("o").
+
+     transf_supplist([N|Ns],[sup(U,B,F,R)|Is]) :-
+	transf_suppitem(N,U,B,F,R), !,
+	transf_supplist(Ns,Is).
+     transf_supplist([],[]).
+
+     transf_suppitem([N|Ns],U,B,F,R) :-
+	transf_suppvalue([N],U,B,F,R), !,
+     	transf_suppitem(Ns,U,B,F,R).
+%%% If a support is not specified, set it 0.
+     transf_suppitem([],U,B,F,R) :-
+	var_then_N(U,0),
+	var_then_N(B,0),
+	var_then_N(F,0),
+	var_then_N(R,0).
+
+%%% If user support, specify what kind of user support.
+%%% This information is provided for supervsior to decide the completeness
+%%%	of a support strategy.
+     transf_suppvalue("u",1,B,F,R) :- assert_once(user_support(u)).
+     transf_suppvalue("n",1,B,F,R) :- assert_once(user_support(n)).
+     transf_suppvalue("o",1,B,F,R) :- assert_once(user_support(o)).
+     transf_suppvalue("b",U,1,F,R).
+     transf_suppvalue("f",U,B,1,R).
+     transf_suppvalue("r",U,B,F,1).
+
+     var_then_N(N,N) :- !.
+     var_then_N(_,_).
+
+%%% SET UP SUPPORT STATUS
+%%%
+%%% set up support environment.
+%%% Set proper values in the fields of SP,and DS.
+     support_info :-
+	support_list_internal(W),
+	!,
+	support_info_1(W).
+
+%%% If user support is given, provide user support information for clauses.
+     support_info_1(W) :-
+	specified_URsupport(W),
+	!, check_unit_clauses_or,
+	!, support_info_1_1(W).
+     support_info_1(W) :-
+	!, support_info_1_1(W).
+
+     support_info_1_1(W) :-
+	specified_usersupport(W),
+	!,
+	support_info_2, !.
+     support_info_1_1(_) :-
+	ubfsupp_1.
+
+%%% If user support other than o is specified, but no user support clauses
+%%%	are given, then fail.
+%%% If user support is o and there is no unit clause, then fail.
+     support_info_2 :-
+	user_support(o),
+	!, check_unit_clauses_or,
+	ubfsupp_o, !.
+     support_info_2 :-
+	check_uorn_support(U),
+	ubfsupp(1,U), !.
+
+     check_unit_clauses_or :-
+	sent_C(cl(_,_,by([_],_,_,_,_))), !.
+     check_unit_clauses_or :-
+	assert_print_error('No unit clauses !'), !, fail.
+
+     check_uorn_support([U|Us]) :-
+	user_supportset([U|Us]), !.
+     check_uorn_support(_) :-
+	assert_print_error('No user support set !'), !, fail.
+
+     specified_URsupport([sup(_,_,_,1)|Rs]).
+     specified_URsupport([_|Rs]) :-
+	!,
+	specified_URsupport(Rs).
+
+     specified_usersupport([sup(1,_,_,_)|Rs]).
+     specified_usersupport([_|Rs]) :-
+	!,
+	specified_usersupport(Rs).
+
+%%% For all unit clauses as user support clauses.
+     ubfsupp_o :-
+	retract(sent_C(cl(CN1,CSize1,by(Cn1,V11,V12,V1,W1)))),
+	ubfsupp_o_1(Cn1,V11,V12,V1,W1,CN1,CSize1),
+	fail.
+     ubfsupp_o :-
+	ubfsupp_1.
+
+     ubfsupp_o_1([Ln1],V11,V12,V1,W1,CN1,CSize1) :-
+	supplement_clause(1,CN1,CSize1,[Ln1],V11,V12,V1,W1), !.
+     ubfsupp_o_1(Cn1,V11,V12,V1,W1,CN1,CSize1) :-
+	supplement_clause(0,CN1,CSize1,Cn1,V11,V12,V1,W1), !.
+
+%%% Calculate support information, priorities.
+     supplement_clause(T,CN1,CSize1,Cn1,V11,V12,V1,W1) :-
+	set_sr_status(T,Cn1,CS1,CR1),
+	calculate_priority_clause(Cn1,CS1,CR1,CP1),
+	list_of_Ns(Cn1,0,F1),
+	assertz(sent_c(cl(CSize1,CN1,by(Cn1,V11,V12,V1,W1),
+		1,CS1,CR1,0,F1,CP1))). 
+
+%%% If the input clause is a user support clause.
+     ubfsupp(N,[N|Ns]) :-
+	retract(sent_C(cl(CN1,CSize1,by(Cn1,V11,V12,V1,W1)))),
+	ubfsupp_neg(CN1,CSize1,Cn1,V11,V12,V1,W1),
+	N2 is N + 1, !,
+	ubfsupp(N2,Ns).
+%%% If the input clause is not a user support clause.
+     ubfsupp(N1,[N|Ns]) :-
+	retract(sent_C(cl(CN1,CSize1,by(Cn1,V11,V12,V1,W1)))),
+	supplement_clause(0,CN1,CSize1,Cn1,V11,V12,V1,W1),
+	N2 is N1 + 1, !,
+	ubfsupp(N2,[N|Ns]).
+     ubfsupp(_,[]) :-
+	check_n_support,
+	ubfsupp_1.
+
+%%% If u is specified as user support.
+     ubfsupp_neg(CN1,CSize1,Cn1,V11,V12,V1,W1) :-
+	user_support(u),
+	supplement_clause(1,CN1,CSize1,Cn1,V11,V12,V1,W1), !.
+%%% If n is specified as user support.
+     ubfsupp_neg(CN1,CSize1,Cn1,V11,V12,V1,W1) :-
+	negclause(Cn1),
+	assert_once('neg_clause_with_n_support'),
+	supplement_clause(1,CN1,CSize1,Cn1,V11,V12,V1,W1), !.
+     ubfsupp_neg(CN1,CSize1,Cn1,V11,V12,V1,W1) :-
+	supplement_clause(0,CN1,CSize1,Cn1,V11,V12,V1,W1).
+
+     check_n_support :-
+	user_support(n),
+	!, check_n_support_1, !.
+     check_n_support.
+
+     check_n_support_1 :-
+	neg_clause_with_n_support, !.
+     check_n_support_1 :-
+	assert_print_error('No negative clauses !'), !, fail.
+
+%%% For backward or forward support strategies.
+     ubfsupp_1 :-
+	ubfsupp_2,
+	sentc_to_sentC_z.
+
+%%% Take care of one clause at a time.
+     ubfsupp_2 :-
+	retract(sent_C(cl(CN1,CSize1,by(Cn1,V11,V12,V1,W1)))),
+	supplement_clause(1,CN1,CSize1,Cn1,V11,V12,V1,W1),
+	!,
+	ubfsupp_2.
+     ubfsupp_2.
+
+%%% Calculate support informations.
+%%% The clause is in user support set.
+     set_sr_status(1,Cn1,sp(1,1,0),ds(0,0,1)) :-
+	negclause(Cn1), !.
+     set_sr_status(1,Cn1,sp(1,0,1),ds(0,1,0)) :-
+	posclause(Cn1), !.
+     set_sr_status(1,Cn1,sp(1,0,0),ds(0,1,1)).
+%%% The clause is not in user support set.
+     set_sr_status(0,Cn1,sp(0,1,0),ds(X,0,1)) :-
+	negclause(Cn1), 
+	infinity(X), !.
+     set_sr_status(0,Cn1,sp(0,0,1),ds(X,1,0)) :-
+	posclause(Cn1), 
+	infinity(X), !.
+     set_sr_status(0,Cn1,sp(0,0,0),ds(X,1,1)) :-
+     	infinity(X).
+
+     assert_print_error(X) :-
+	assert(error(X)),
+	write_line(10,X).

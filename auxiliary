@@ -1,0 +1,629 @@
+%%% AUXILIARIES
+%%%
+%%% COMPARISON
+%%%
+     max_CS_ind(sp(S11,S12,S13),sp(S21,S22,S23),sp(S31,S32,S33),Up) :-
+	binary_max_ind(S11,S21,S31,Up),
+	binary_max_ind(S12,S22,S32,Up),
+	binary_max_ind(S13,S23,S33,Up).
+
+%%% Only for binary comparison.
+     binary_max_ind(0,1,1,u) :- !.
+     binary_max_ind(Y,_,Y,Up).
+
+%%% Only for binary comparison.
+     binary_min_ind(1,0,0,u) :- !.
+     binary_min_ind(Y,_,Y,Up).
+
+%%% Maximum of CS without indicator.
+     max_CS(sp(S11,S12,S13),sp(S21,S22,S23),sp(S31,S32,S33)) :-
+	binary_max(S11,S21,S31),
+	binary_max(S12,S22,S32),
+	binary_max(S13,S23,S33).
+
+%%% Only for binary comparison.
+     binary_max(0,1,1) :- !.
+     binary_max(Y,_,Y).
+
+%%% Only for binary comparison.
+     binary_min(1,0,0) :- !.
+     binary_min(Y,_,Y).
+
+%%% For any value.
+     min_ind(V1,V2,V2,u) :- V2 < V1, !.
+     min_ind(V1,_,V1,Up).
+
+%%% For any value.
+     max_ind(V1,V2,V2,u) :- V2 > V1, !.
+     max_ind(V1,_,V1,Up).
+
+%%% Compare two CR's. 
+     min_CR_ind(ds(R11,R12,R13),ds(R21,R22,R23),ds(R31,R32,R33),Up) :-
+	min_ind(R11,R21,R31,Up),
+	min_ind(R12,R22,R32,Up),
+	min_ind(R13,R23,R33,Up).
+
+%%% Minimum of CR without indicator.
+     min_CR(ds(R11,R12,R13),ds(R21,R22,R23),ds(R31,R32,R33)) :-
+	minimum(R11,R21,R31),
+	minimum(R12,R22,R32),
+	minimum(R13,R23,R33).
+
+%%% Minimum of Fs with indicator.
+     min_Flags_ind([F1|Fs1],[F2|Fs2],[F3|Fs3],Up) :-
+	binary_min_ind(F1,F2,F3,Up), !,
+	min_Flags_ind(Fs1,Fs2,Fs3,Up).
+     min_Flags_ind([],[],[],Up).
+
+%%% RELATED ROUTINES
+%%%
+%%% calculate the size of a clause.
+     clause_size(C,S) :- clause_size(C,0,S).
+     clause_size([L|Ls],S1,S2) :-
+	term_size(L,SL),
+	SM is S1 + SL, !,
+	clause_size(Ls,SM,S2).
+     clause_size([],S,S).
+
+%%% calculate the size of a clause for sliding priority.
+%%% don't count "not".
+     clause_size_sp(C,S) :- clause_size_sp(C,0,S).
+     clause_size_sp([L|Ls],S1,S2) :-
+	literal_size(L,SL),
+	SM is S1 + SL, !,
+	clause_size_sp(Ls,SM,S2).
+     clause_size_sp([],S,S).
+
+%%% literal_depth computes the depth of a literal. It doesn't count "not".
+%%% 	For example, f(g(a)) has depth 2, while not f(g(a)) also has 
+%%%	depth 2. The reason for this is that we want them having the 
+%%%	same importance to the priority consideration. Since we use
+%%%	linking strategy, a positive literal should be linked with a 
+%%%	negative literal.
+     literal_depth(not(X),D) :-
+	term_depth_ns(X,D), !.
+     literal_depth(X,D) :-
+	term_depth_ns(X,D), !.
+
+%%% Calculate the depth of a term for sliding priority.
+     term_depth_ns(X,D) :- var(X), var_depth(X,D), !.
+     term_depth_ns(X,D) :- nonvar_depth_weight(X,D), !.
+     term_depth_ns(X,0) :- atomic(X), !.
+     term_depth_ns(X,D) :-
+	X =.. [F|Args],
+	arg_depth_ns(Args,0,Darg),
+	D is Darg + 1, !.
+     arg_depth_ns([A1|As],Din,Dout) :-
+	term_depth_ns(A1,D1),
+	maximum(Din,D1,D2), !,
+	arg_depth_ns(As,D2,Dout).
+     arg_depth_ns([],D,D).
+
+%%% Calculate depth for a variable.
+%%% If we have var_depth_weight(T,D) in database, then the weight is D.
+%%% Otherwise it is 0.
+     var_depth(X,D) :-
+	var_depth_weight(X,D), !.
+     var_depth(X,0).
+	
+%%% literal_size calculates the size of a literal. Do not count "not".
+     literal_size(not(X),S) :- 
+	term_size_ns(X,S), !.
+     literal_size(X,S) :- 
+	term_size_ns(X,S), !.
+
+%%% Calculate the size of a term for sliding priority.
+     term_size_ns(Term,Size) :-
+	term_size_ns(Term,0,Size).
+     term_size_ns(Term,Size1,Size2) :-
+	var(Term), var_size(Term,W), Size2 is Size1 + W, !.
+     term_size_ns(Term,Size1,Size2) :-
+	nonvar_size_weight(Term,W), 
+	Size2 is Size1 + W, !.
+     term_size_ns(Term,Size1,Size2) :-
+	atomic(Term),
+	Size2 is Size1 + 1, !.
+     term_size_ns(Term,Size1,Size2) :-
+	functor(Term,F,N),
+	SizeM is Size1 + 1,
+	args_size_ns(Term,0,N,SizeM,Size2).
+
+     args_size_ns(Term,N1,N2,SizeI,SizeO) :-
+	NN is N1 + 1,
+	NN =< N2,
+	arg(NN,Term,Arg),
+	term_size_ns(Arg,SizeI,SizeM),
+	!,
+	args_size_ns(Term,NN,N2,SizeM,SizeO).
+     args_size_ns(Term,N,N,SizeO,SizeO).
+
+%%% Calculate size for a variable.
+%%% If we have var_size_weight(T,W) in database, then the weight is W.
+%%% Otherwise it is 1.
+     var_size(X,W) :-
+	var_size_weight(X,W), !.
+     var_size(X,1).
+	
+%%% Calculate the priority of a clause.
+     calculate_priority_clause(Cn1,CS1,CR1,pr(PS,PD,PL,PR,P)) :-
+	slidepriority,
+	depth_coef(DCoef),
+	size_coef(SCoef),
+	literal_coef(LCoef),
+	relevance_coef(RCoef),
+	priority_PS(SCoef,Cn1,PS),
+	priority_PD(DCoef,Cn1,PD),
+	priority_PL(LCoef,Cn1,CS1,PL),
+	priority_PR(RCoef,CR1,PR),
+	priority_clause(PS,PD,PL,PR,P), !.
+     calculate_priority_clause(_,_,_,pr(0,0,0,0,0)).
+
+%%% calculate the priority of a clause.
+%%% The priority is rounded to integer.
+%%% The formula is 
+%%% 	priority = max(Cs*S, Cd*d, Cr*max(B+F,U), Cl*l)
+%%%
+     priority_clause(PS,PD,PL,PR,P) :-
+	\+ sum_of_measures,
+	maximum(PS,PD,X1),
+	maximum(X1,PL,X2),
+	maximum(X2,PR,P), !.
+     priority_clause(PS,PD,PL,PR,P) :-
+	P is PS + PD + PL + PR.
+
+%%% calculate the PS part of priority.
+     priority_PS(SCoef,Cn1,PS) :-
+	max_clausesize_sp(Cn1,MLSize),
+	Temp is SCoef * MLSize,
+	floor(Temp,PS).
+
+%%% If size_by_clause is asserted, count all literals.
+%%% Otherwise, use the maximum literal size.
+     max_clausesize_sp(Cn1,MLSize) :-
+	size_by_clause,
+	clause_size_sp(Cn1,MLSize), !.
+     max_clausesize_sp(Cn1,MLSize) :-
+	maxliteral_size(Cn1,MLSize).
+
+%%% calculate the PD part of priority.
+     priority_PD(DCoef,Cn1,PD) :-
+	clause_depth(Cn1,DClause),
+	Temp is DCoef * DClause,
+	floor(Temp, PD).
+
+%%% calculate the PL part of priority.
+     priority_PL(LCoef,Cn1,CS1,PL) :-
+	numberof_literals_sp(Cn1,CS1,NLiterals),
+	Temp is LCoef * NLiterals,
+	floor(Temp, PL).
+
+%%% calculate the PR part of priority.
+     priority_PR(RCoef,ds(R11,R12,R13),PR) :-
+	YY is R12 + R13,
+	maximum(YY,R11,Max2),
+	Temp is RCoef * Max2,
+	floor(Temp, PR).
+
+     priority_NewPR(CR3,PR3) :-
+	slidepriority,
+	relevance_coef(RCoef),
+	priority_PR(RCoef,CR3,PR3), !.
+     priority_NewPR(_,0).
+
+%%% calculate the depth of a clause.
+%%% The depth of a clause is the maximum of the depths of all its literals.
+     clause_depth(C,S) :- clause_depth(C,0,S).
+     clause_depth([L|Ls],D1,D2) :-
+	literal_depth(L,DTerm),
+	maximum(DTerm,D1,DMid), !,
+	clause_depth(Ls,DMid,D2).
+     clause_depth([],D2,D2).
+
+%%% calculate the number of literals in a clause for sliding priority use.
+     numberof_literals_sp(Cn1,_,NLiterals) :-
+	count_all_literals,
+	length(Cn1,NLiterals), !.
+     numberof_literals_sp(Cn1,sp(_,_,1),NLiterals) :-
+	length(Cn1,NLiterals), !.	% length is a system predicate.
+     numberof_literals_sp(Cn1,_,NLiterals) :-
+	number_poslits(Cn1,0,NLiterals).
+
+%%% if all negative clause, count it as 1.
+     number_poslits([L1|Ls1],N,NLiterals) :-
+	\+ negative_lit(L1),
+	NN is N + 1, !,
+	number_poslits(Ls1,NN,NLiterals).
+     number_poslits([_|Ls1],N,NLiterals) :-
+	!,
+	number_poslits(Ls1,N,NLiterals).
+     number_poslits([],0,1) :- !.
+     number_poslits([],N,N).
+
+%%% calculate the size of the largest literal in a clause.
+%%% We don't count "not".
+     maxliteral_size(Cn1,MLSize) :-
+	maxliteral_size(Cn1,0,MLSize).
+     maxliteral_size([L|Ls],S1,S2) :-
+	literal_size(L,X),
+	maximum(X,S1,SM), !,
+	maxliteral_size(Ls,SM,S2).
+     maxliteral_size([],S2,S2).
+
+%%% Check if a given clause is a negative clause.
+     negclause([P1|Ps]) :-
+	negative_lit(P1), !,
+	negclause(Ps).
+     negclause([]).
+
+%%% Check if a given clause is a positive clause.
+     posclause([P1|Ps]) :-
+	\+ negative_lit(P1), !,
+	posclause(Ps).
+     posclause([]).
+
+%%% Fails if the clause is neither positive nor negative.
+%%% Returns with flag "n" if the clause is negative.
+%%% Returns with flag "p" if the clause is positive.
+     pn_clause([L|Ls],n) :-
+	negative_lit(L),
+	!,
+	pn_clause(Ls,n).
+     pn_clause([L|Ls],p) :-
+	\+ negative_lit(L),
+	!,
+	pn_clause(Ls,p).
+     pn_clause([],_).
+
+%%% Note that this can only be used for literals, not for terms.
+     negative_lit(not(_)) :- !.
+
+%%% initialize num to zero for counting purpose.
+     init_num :-
+	retract(num(_)),
+    	assert(num(0)), !.
+     init_num :-
+    	assert(num(0)), !.
+
+%%% take the content of num plus one as output. Also increment num in database.
+     next_num(N) :-
+	retract(num(X)),
+	N is X + 1,
+	assert(num(N)), !.
+     next_num(1) :-
+	assert(num(1)), !.
+
+%%% PRINTING ROUTINES:
+%%%
+
+%%% print out clauses after hyper-linking.
+     print_ahl :-
+	outCahl,
+	write_line(5,'Clause set after hyper-linking :'),
+	init_num,
+	print_sentC, !.
+     print_ahl.
+
+%%% print out clauses before unit subsumption/simplification.
+     print_busentC :-
+	outCagen,
+	write_line(5,'Clause set after clause generation :'),
+	init_num,
+	print_sentC, !.
+     print_busentC.
+
+     print_sentC :-
+	sent_C(cl(_,_,by(Cn1,V11,V11,V1,_),_,CS1,CR1,_,CF1,_)),
+	printsentC_2(Cn1,V1,CS1,CR1,CF1),
+	fail.
+     print_sentC.
+
+%%% print out clauses after unit simplification.
+     print_ausentC :-
+	outCasimp,
+	write_line(5,'Clause set after simplification :'),
+	init_num,
+	print_sentC, !.
+     print_ausentC.
+
+     printsentC_2(Cn1,V1,CS1,CR1,CF1) :-
+	next_num(N),
+	write_numberedline_head(10,N,'.'),
+	print_clause(2,15,Cn1,V1,CS1,CR1,CF1), !. 
+
+%%% print out clauses after instance deletion. 
+     print_after_instdel :-
+        outCainst,         
+        write_line(5,'Clause set after instance deletion :'), 
+        init_num, 
+        print_sentC, !.  
+     print_after_instdel.
+
+%%% print out fully linked set.
+     print_fls(FLS) :-
+	outfls,
+	write_line(5,'FLS set are :'),
+	print_clause_list(FLS), !.
+     print_fls(_).
+
+     print_clause_list(FLS) :-
+	init_num,
+	print_clause_list_1(FLS).
+
+     print_clause_list_1([F|FLS]) :-
+	next_num(N),
+	write_numberedline_head(10,N,'.'),
+	write_line(2,F), !,
+	print_clause_list_1(FLS).
+     print_clause_list_1([]).
+
+%%% print out an instance.
+     print_INST(Cn1,V1,CS1,CR1,CF1) :- 
+	outinst,
+	print_clause(10,15,Cn1,V1,CS1,CR1,CF1), !.
+     print_INST(_,_,_,_,_) :- !.
+
+%%% print out nucleus.
+     print_nucleus(Cn1,V1,CS1,CR1,CF1) :-
+	outinst,
+	write_line(5,'Current nucleus is :'),
+	print_clause(10,15,Cn1,V1,CS1,CR1,CF1),
+	write_line(5,'New instances obtained from the nucleus are :'), !.
+     print_nucleus(_,_,_,_,_) :- !.
+
+     print_clause(N1,N2,Cn1,V1,CS1,CR1,CF1) :-
+	print_clause_2(N1,Cn1,V1),
+	print_SR(N2,CS1,CR1,CF1), !.
+
+     print_clause_2(N,Cn1,V1) :-
+	var_list(V1),
+	write_line(N,Cn1), fail.
+     print_clause_2(_,_,_).
+
+%%% print out distances.
+     print_SR(N,CS1,CR1,CF1) :- 
+	tab(N), write(CS1),write(', '),write(CR1),write(', '),write(CF1),nl.
+
+%%% print out literal list.
+     print_litsall :-
+	outhllits,
+	write_line(5,'Lit_G list in hyper-linking:'),
+	init_num,
+	print_litG_2, 
+	write_line(5,'Lit_S list in hyper-linking:'),
+	init_num,
+	print_litS_2, 
+	!.
+     print_litsall.
+
+%%% Print out general literal list.
+     print_litG_2 :-
+	lit_G(_,lby(Ln1,V11,V11,V1),CS1,CR1),
+	printsentC_2(Ln1,V1,CS1,CR1,[0]),
+	fail.
+     print_litG_2.
+
+%%% Print out supported literal list.
+     print_litS_2 :-
+	lit_S(_,lby(Ln1,V11,V11,V1),CS1,CR1),
+	printsentC_2(Ln1,V1,CS1,CR1,[0]),
+	fail.
+     print_litS_2.
+
+%%% Write a line out.
+     write_line(N,Text) :-
+	tab(N),write(Text),nl, !.
+     write_line(N,Text,Object) :-
+	tab(N),write(Text),write(Object),nl, !.
+
+%%% write the head for a numbered line.
+     write_numberedline_head(T1,N,Text) :-
+	tab(T1),write(N),write(Text), !.
+
+%%% Check the number of variables in a clause.
+     check_numbervars(V2,S) :-
+	\+ const_list(V2),
+	write_line(5,S),
+	assert_once(over_numvars), !, fail.
+     check_numbervars(_,_).
+
+%%% Literals remaining -- 1.
+%%% Delete any literals with 1 in the corresponding position of another list.
+     literals_remain_1([1|Ns1],[_|Lns1],Cn2,1) :-
+	literals_remain_1(Ns1,Lns1,Cn2,1).
+     literals_remain_1([0|Ns1],[Ln1|Lns1],[Ln1|Lns2],DF) :-
+	literals_remain_1(Ns1,Lns1,Lns2,DF).
+     literals_remain_1([],[],[],_).
+
+%%% Literals remaining -- 2.
+%%% Delete any literals with 1 in the corresponding position of another list.
+     literals_remain_2([1|Ns1],[_|Lns1],[_|Wns1],Cn2,W2,1) :-
+	literals_remain_2(Ns1,Lns1,Wns1,Cn2,W2,1).
+     literals_remain_2([0|Ns1],[Ln1|Lns1],[Wn1|Wns1],[Ln1|Lns2],
+		[Wn1|Wns2],DF) :-
+	literals_remain_2(Ns1,Lns1,Wns1,Lns2,Wns2,DF).
+     literals_remain_2([],[],[],[],[],_).
+
+%%% Literals remaining -- 3.
+%%% Delete any literals with 1 in the corresponding position of another list.
+     literals_remain_3([1|Ns1],[_|Lns1],[_|Wns1],[_|Fns1],Cn2,W2,F2,1) :-
+	literals_remain_3(Ns1,Lns1,Wns1,Fns1,Cn2,W2,F2,1).
+     literals_remain_3([0|Ns1],[Ln1|Lns1],[Wn1|Wns1],[Fn1|Fns1],
+		[Ln1|Lns2],[Wn1|Wns2],[Fn1|Fns2],DF) :-
+	literals_remain_3(Ns1,Lns1,Wns1,Fns1,Lns2,Wns2,Fns2,DF).
+     literals_remain_3([],[],[],[],[],[],[],_).
+
+%%% Clause remaining -- 1.
+%%% Keep literals if the ordinal number of these literals are listed in
+%%%	another list.
+     clause_remain_1([N1|Flags],N1,[Ln1|Lns1],[Ln1|Lns2]) :-
+	N2 is N1 + 1, !,
+	clause_remain_1(Flags,N2,Lns1,Lns2).
+     clause_remain_1(Flags,N1,[_|Lns1],Lns2) :-
+	N2 is N1 + 1, !,
+	clause_remain_1(Flags,N2,Lns1,Lns2).
+     clause_remain_1([],_,_,[]).
+
+%%% Clause remaining -- 2.
+%%% Keep literals if the ordinal number of these literals are listed in
+%%%	another list.
+     clause_remain_2([N1|Flags],N1,[Ln1|Lns1],[Wn1|Wns1],
+		[Ln1|Lns2],[Wn1|Wns2]) :-
+	N2 is N1 + 1, !,
+	clause_remain_2(Flags,N2,Lns1,Wns1,Lns2,Wns2).
+     clause_remain_2(Flags,N1,[_|Lns1],[_|Wns1],Lns2,Wns2) :-
+	N2 is N1 + 1, !,
+	clause_remain_2(Flags,N2,Lns1,Wns1,Lns2,Wns2).
+     clause_remain_2([],_,_,_,[],[]).
+
+%%% Clause remaining -- 3.
+%%% Keep literals if the ordinal number of these literals are listed in
+%%%	another list.
+     clause_remain_3([N1|Flags],N1,[Ln1|Lns1],[Wn1|Wns1],[Fn1|Fns1],
+		[Ln1|Lns2],[Wn1|Wns2],[Fn1|Fns2]) :-
+	N2 is N1 + 1, !,
+	clause_remain_3(Flags,N2,Lns1,Wns1,Fns1,Lns2,Wns2,Fns2).
+     clause_remain_3(Flags,N1,[_|Lns1],[_|Wns1],[_|Fns1],Lns2,Wns2,Fns2) :-
+	N2 is N1 + 1, !,
+	clause_remain_3(Flags,N2,Lns1,Wns1,Fns1,Lns2,Wns2,Fns2).
+     clause_remain_3([],_,_,_,_,[],[],[]).
+
+
+%%% Duplicate deletions -- 1.
+%%% Delete duplicate literals in a clause.
+     delete_replicate_literals_1([L1|Lm],[L1|Ln]) :-
+     	delete_replicate_literal_1(L1,Lm,Lx), !,
+     	delete_replicate_literals_1(Lx,Ln).
+     delete_replicate_literals_1([],[]).
+
+     delete_replicate_literal_1(L1,[L2|Lm],Lx) :-
+	L1 == L2, !,
+	delete_replicate_literal_1(L1,Lm,Lx).
+     delete_replicate_literal_1(L1,[L2|Lm],[L2|Lx]) :-
+	delete_replicate_literal_1(L1,Lm,Lx).
+     delete_replicate_literal_1(_,[],[]).
+
+%%% Duplicate deletions -- 2.
+%%% Delete duplicate literals in a clause.
+     delete_replicate_literals_2([L1|Lm],[W1|Wm],[L1|Ln],[W1|Wn]) :-
+     	delete_replicate_literal_2(L1,Lm,Wm,Lx,Wx), !,
+     	delete_replicate_literals_2(Lx,Wx,Ln,Wn).
+     delete_replicate_literals_2([],[],[],[]).
+
+     delete_replicate_literal_2(L1,[L2|Lm],[W2|Wm],Lx,Wx) :-
+	L1 == L2, !,
+	delete_replicate_literal_2(L1,Lm,Wm,Lx,Wx).
+     delete_replicate_literal_2(L1,[L2|Lm],[W2|Wm],[L2|Lx],[W2|Wx]) :-
+	delete_replicate_literal_2(L1,Lm,Wm,Lx,Wx).
+     delete_replicate_literal_2(_,[],[],[],[]).
+
+%%% Duplicate deletions -- 3.
+%%% Delete duplicate literals in a clause.
+     delete_replicate_literals_3([L1|Lm],[W1|Wm],[F1|Fm],
+		[L1|Ln],[W1|Wn],[F1|Fn]) :-
+     	delete_replicate_literal_3(L1,Lm,Wm,Fm,Lx,Wx,Fx), !,
+     	delete_replicate_literals_3(Lx,Wx,Fx,Ln,Wn,Fn).
+     delete_replicate_literals_3([],[],[],[],[],[]).
+
+     delete_replicate_literal_3(L1,[L2|Lm],[_|Wm],[_|Fm],Lx,Wx,Fx) :-
+	L1 == L2, !,
+	delete_replicate_literal_3(L1,Lm,Wm,Fm,Lx,Wx,Fx).
+     delete_replicate_literal_3(L1,[L2|Lm],[W2|Wm],[F2|Fm],
+		[L2|Lx],[W2|Wx],[F2|Fx]) :-
+	delete_replicate_literal_3(L1,Lm,Wm,Fm,Lx,Wx,Fx).
+     delete_replicate_literal_3(_,[],[],[],[],[],[]).
+
+%%% If size_by_clauseasserted, it is clause_size_sp.
+%%% Otherwise, it is minliteral_size.
+     min_clausesize_sp(C,S) :-
+	size_by_clause,
+	clause_size_sp(C,S), !.
+     min_clausesize_sp(C,S) :-
+	minliteral_size(C,S).
+
+%%% Find the smallest literal size.
+     minliteral_size([L|Ls],S2) :-
+	literal_size(L,S1),
+	minliteral_size(Ls,S1,S2).
+     minliteral_size([L|Ls],S1,S2) :-
+	literal_size(L,X),
+	minimum(X,S1,Y),
+	minliteral_size(Ls,Y,S2).
+     minliteral_size([],S2,S2).
+
+%%% Find clause depth.
+     min_clause_depth([L|Ls],D2) :-
+	literal_depth(L,D1),
+	min_clause_depth(Ls,D1,D2).
+     min_clause_depth([L|Ls],D1,D2) :-
+	literal_depth(L,X),
+	minimum(X,D1,Y),
+	min_clause_depth(Ls,Y,D2).
+     min_clause_depth([],D2,D2).
+
+%%% Rename sent_c to sent_C.
+%%% Assert at the end.
+     sentc_to_sentC_z :- not(not(sentc_to_sentC_z_1)).
+     sentc_to_sentC_z_1 :-
+	retract(sent_c(C)),
+	assertz(sent_C(C)),
+	fail.
+     sentc_to_sentC_z_1.
+
+%%% Rename sent_c to sent_C.
+%%% Asser in the front.
+     sentc_to_sentC_a :- not(not(sentc_to_sentC_a_1)).
+     sentc_to_sentC_a_1 :-
+	retract(sent_c(C)),
+	asserta(sent_C(C)),
+	fail.
+     sentc_to_sentC_a_1.
+
+%%% Rename sent_INST to sent_C.
+%%% Asser in the front.
+     sentINST_to_sentC_a :-
+     	not(not(sentINST_to_sentC_a_1)).
+     sentINST_to_sentC_a_1 :-
+	retract(sent_INST(C1)),
+	asserta(sent_C(C1)),
+	fail.
+     sentINST_to_sentC_a_1.
+
+%%% Succeed if horn clause.
+     horn_clause([X|Xs]) :-
+	negative_lit(X),
+	!, horn_clause(Xs).
+     horn_clause([X|Xs]) :-
+	!, negclause(Xs).
+     horn_clause([]).
+
+%%% Separate a ground literal and the rest. Fails if no ground literals.
+     sep_gr_lit_2([W1|Ws1],[L1|Ls1],W1,Ws1,L1,Ls1) :-
+        var(W1), !.
+     sep_gr_lit_2([W|Ws],[L|Ls],W1,[W|Ws1],L1,[L|Ls1]) :-
+        sep_gr_lit_2(Ws,Ls,W1,Ws1,L1,Ls1), !.
+
+%%% Separate a ground literal and the rest. Fails if no ground literals.
+     sep_gr_lit_3([W1|Ws1],[L1|Ls1],[T1|Ts1],W1,Ws1,L1,Ls1,T1,Ts1) :-
+        var(W1), !.
+     sep_gr_lit_3([W|Ws],[L|Ls],[T|Ts],W1,[W|Ws1],L1,[L|Ls1],T1,[T|Ts1]) :-
+        sep_gr_lit_3(Ws,Ls,Ts,W1,Ws1,L1,Ls1,T1,Ts1), !.
+
+%%% Separate a ground literal and the rest. Fails if no ground literals.
+     sep_gr_lit_4([W1|Ws1],[L1|Ls1],[D1|Ds1],[T1|Ts1],W1,Ws1,L1,Ls1,
+		D1,Ds1,T1,Ts1) :-
+        var(W1), !.
+     sep_gr_lit_4([W|Ws],[L|Ls],[D|Ds],[T|Ts],W1,[W|Ws1],L1,[L|Ls1],
+		D1,[D|Ds1],T1,[T|Ts1]) :-
+        sep_gr_lit_4(Ws,Ls,Ds,Ts,W1,Ws1,L1,Ls1,D1,Ds1,T1,Ts1), !.
+
+%%% Compute the number of non-ground literals. 
+     compute_V_lits([W|W2],N1,V2) :-  
+        \+ var(W), NN1 is N1 + 1, !, compute_V_lits(W2,NN1,V2).
+     compute_V_lits([_|W2],N1,V2) :-
+        !, compute_V_lits(W2,N1,V2).
+     compute_V_lits([],N1,N1).
+
+%%% Union two lists.
+     union_lists([1|L1],[_|L2],[1|L3]) :- !, union_lists(L1,L2,L3).
+     union_lists([_|L1],[X|L2],[X|L3]) :- !, union_lists(L1,L2,L3).
+     union_lists([],_,[]).

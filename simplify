@@ -1,0 +1,417 @@
+%%% SIMPLIFY
+%%%
+%%% This module performs four tasks:
+%%%	tautology deletion
+%%%	unit simplification
+%%%	ground unit clause generation
+%%%	duplicate deletion
+
+%%% Unit subsumption never fails.
+%%% Unit simplification succeeds if a simplified clause is an empty clause.
+%%% Tautology deletion never fails.
+%%% Duplicate deletion never fails.
+
+%%% We take advantage of the fast unification in prolog. Put unit clauses
+%%% 	separately.
+%%% In order to check subsumption for unit clauses, we number the original
+%%%	unit clauses and generated unit clauses, so that a unit clause 
+%%%	won't be sumbsumed by itself.
+     fol_simplify :-
+	check_tautology_deletion.
+     fol_simplify :-
+	not(not(check_unit_simp)), !.
+     fol_simplify :-
+	gug.
+     fol_simplify :-
+	check_duplicate_deletion.
+
+%%% Tautology deletions.
+     check_tautology_deletion :-
+	tautology_deletion,
+	cputime(TT1),
+	const_list(Clist),
+	tautology_deletion(Clist),
+	cputime(TT2),
+	TT3 is TT2 -TT1,
+	write_line(5,'Tautology deletion(s): ',TT3), 
+	!, fail.
+
+%%% Unit simplification/subsumption.
+     check_unit_simp :-
+	unit_resolution,
+	cputime(TT1),
+	abolish(new_unit_clause,0),
+	unit_simp_subs(Res),
+	cputime(TT2),
+	TT3 is TT2 -TT1,
+	write_line(5,'Unit simplification(s): ',TT3), 
+	!, Res == suc.
+
+
+%%% Ground unit generation. If a non-unit clause C having only one ground
+%%%	literal L, the non-ground literals can be unified with unit clauses,
+%%%	then C can be replaced by L.
+     gug :-
+	cputime(TT1),
+	gug_1,
+	cputime(TT2),
+	TT3 is TT2 - TT1,
+	write_line(5,'Ground unit generation(s): ',TT3),
+	!, fail.
+
+%%% Duplicate deletions.
+     check_duplicate_deletion :-
+	unit_resolution,
+	cputime(TT1),
+	const_list(Clist),
+	bagof1(Ref1,nonunitcl(Ref1),Refs1),
+	duplicate_deletion(Refs1,Clist),
+	cputime(TT2),
+	TT3 is TT2 -TT1,
+	write_line(5,'Duplicate deletion(s): ',TT3), 
+	!, fail.
+
+%%% Find reference for non-unit clauses.
+     nonunitcl(X) :-
+	clause(sent_C(cl(_,_,by([_,_|_],_,_,_,_),_,_,_,_,_,_)),true,Ref1),
+	X = Ref1.
+
+%%% Perform tautology deletion.
+     tautology_deletion(Clist) :-
+	clause(sent_C(cl(_,_,by([L1,L2|Ls],V11,V11,Clist,_),_,_,_,_,_,_)),
+		true,Ref1),
+	tautology_clause([L1,L2|Ls]),
+	erase(Ref1),
+	fail.
+     tautology_deletion(_).
+
+%%% Perform unit simplification/subsumption.
+     unit_simp_subs(Res) :-
+	sent_C(cl(_,_,by([_],_,_,_,_),_,_,_,_,_,_)),
+	init_num,
+	move_unit_clauses,
+	unit_simp_subs_1(Res), !.
+     unit_simp_subs(nsuc).
+
+%%% Move unit clauses to ou clauses.
+%%% Number the unit clauses.
+     move_unit_clauses :-
+	retract(sent_C(cl(CSize1,CN1,by([L1],V11,V12,V1,W1),
+		CI1,CS1,CR1,CT1,CF1,CP1))),
+	next_num(N),
+	assertz(ou(cl(CSize1,CN1,by([L1],V11,V12,V1,W1),
+		CI1,CS1,CR1,CT1,CF1,CP1),N)),
+	fail.
+     move_unit_clauses.
+	
+%%% In order to effiently matched unit clauses, we keep them in a separate
+%%% 	database, since we don't need to care about the simplification of
+%%%	unit clause ( We stop whenever a unit clause is simplified by 
+%%%	another unit clause ). 
+%%% We keep a special data structure for nonunit clauses. We don't update
+%%%	the clauses directly in the database, but update the special
+%%%	data structure instead.
+     unit_simp_subs_1(Res) :-
+	const_list(Clist),
+	bagof1(X,transtrps(X),Trps),
+	unit_simp_subs_2(Clist,Trps,Res), !.
+
+%%% Obtain a special data structure for non-unit clauses.
+     transtrps(X) :-
+	clause(sent_C(cl(_,_,by(Cn,_,_,_,_),_,CS,_,_,_,_)),true,FF),
+	corresp_ordinals_list(Cn,Flags),
+	X = us(CS,FF,Flags,0).
+
+%%% unit_simp_subs_3 succeeds if an empty clause is found.
+     unit_simp_subs_2(Clist,Trps1,Tag) :-
+	unit_simp_subs_3(Clist,Trps1,Trps2,Tag),
+	unit_simp_subs_2_1(Tag,Clist,Trps2).
+
+%%% If unsatisfiable, then done.
+     unit_simp_subs_2_1(Tag,_,Trps2) :- 
+	Tag == suc, 
+	unit_simp_subs_hk(Trps2),
+	!.
+%%% If new unit clauses are generated in the last iteration, start 
+%%%	another round of iteration.
+     unit_simp_subs_2_1(Tag,Clist,Trps2) :-
+	retract(new_unit_clause),
+	unit_simp_subs_2(Clist,Trps2,Tag), !.
+%%% If no new unit clauses are generated in the last iteration, stop.
+     unit_simp_subs_2_1(nsec,_,Trps2) :-
+	unit_simp_subs_hk(Trps2).
+
+%%% Simplify/subsumes unit clauses first.
+     unit_simp_subs_3(Clist,Trps2,Trps2,Tag) :-
+	unit_clause_simp_subs(Clist,Tag), !.
+%%% Simplify/subsumes nonunit clauses.
+     unit_simp_subs_3(Clist,Trps1,Trps2,Tag) :-
+	non_unit_clause_simp_subs(Clist,Trps1,Trps2,Tag), !.
+
+%%% Simplification/subsumption for unit clauses.
+     unit_clause_simp_subs(Clist,Tag) :-
+	pick_unit_clause_simp_subs(Clist,Ln1,N1,Ref1),
+	negate(Ln1,NLn1),
+	unit_clause_simp_subs_1(Ln1,NLn1,N1,Ref1,Tag), !.
+
+%%% Pick a unit clause to be sumbumed or simplified.
+     pick_unit_clause_simp_subs(Clist,Ln1,N1,Ref1) :-
+	clause(ou(cl(_,_,by([Ln1],V11,V11,Clist,_),_,_,_,_,_,_),N1),
+		true,Ref1).
+     pick_unit_clause_simp_subs(Clist,Ln1,N1,Ref1) :-
+	clause(du(cl([Ln1],Clist,_,_,_,_,_,_),N1),true,Ref1).
+
+%%% Find if a unit clause subsumes the underlying literal.
+     unit_clause_simp_subs_1(_,NLn1,_,_,suc) :-
+	unit_clause_unit_matched(NLn1,_), !.
+     unit_clause_simp_subs_1(Ln1,_,N1,Ref1,_) :-
+	unit_clause_unit_matched(Ln1,N1),
+	erase(Ref1), !, fail.
+
+%%% Find if a unit clause simplifies the underlying unit clause.
+%%% First check the unit clauses ou.
+     unit_clause_unit_matched(Ln1,N1) :-
+	ou(cl(_,_,by([Ln1],V11,V11,_,_),_,_,_,_,_,_),N2),
+	N1 \== N2, !.
+%%% Then check the unit clauses du.
+     unit_clause_unit_matched(Ln1,N1) :-
+	du(cl([Ln1],_,_,_,_,_,_,_),N2), N1 \== N2, !.
+
+%%% Find if a unit clause simplifies the underlying literal.
+%%% First check the unit clauses ou.
+     non_unit_clause_unit_match(Ln1,CS2) :-
+	ou(cl(_,_,by([Ln1],V11,V11,_,_),_,CS2,_,_,_,_),_), !.
+%%% Then check the unit clauses du.
+     non_unit_clause_unit_match(Ln1,CS2) :-
+	du(cl([Ln1],_,_,_,CS2,_,_,_),_), !.
+
+%%% Simplification/subsumption for nonunit clauses.
+%%% Do one non-unit clause at a time.
+     non_unit_clause_simp_subs(Clist,[Trp1|Trps1],Trps2,Tag) :-
+	Trp1 = us(CS1,Ref1,Flags1,_),
+	clause(sent_C(cl(_,_,by(Cn1,V11,V11,Clist,_),_,_,_,_,_,_)),
+		true,Ref1),
+	clause_remain_1(Flags1,1,Cn1,CnM),
+	unit_reso_clause(Trp1,CnM,CS1,Ref1,Flags1,Trps2,Trps3,Tag),
+	!,
+	non_unit_clause_simp_subs_1(Tag,Clist,Trps1,Trps3).
+     non_unit_clause_simp_subs(_,[],[],_).
+
+     non_unit_clause_simp_subs_1(Tag,_,Trps1,Trps1) :- Tag == suc, !.
+     non_unit_clause_simp_subs_1(Tag,Clist,Trps1,Trps3) :-
+	non_unit_clause_simp_subs(Clist,Trps1,Trps3,Tag).
+
+%%% If the underlying clause can be neither subsumped nor simplified,
+%%% 	unit_reso_literals would fail.
+     unit_reso_clause(Trp1,Cn1,CS1,Ref1,Flags1,Trps2,Trps3,Tag) :-
+	unit_reso_literals(CS1,Flags1,Cn1,CS3,Flags3,Cn3,Res,_), !,
+	update_trps(Cn3,Res,Flags3,CS3,Ref1,Trps2,Trps3,Tag).
+     unit_reso_clause(Trp1,_,_,_,_,[Trp1|Trps2],Trps2,_).
+
+     unit_reso_literals(_,_,[Ln1|_],_,_,d,n,_) :-
+	non_unit_clause_unit_match(Ln1,_), !.
+     unit_reso_literals(CS1,[_|Flags1],[Ln1|Lns1],CS3,Flags3,Cn3,Var1,s) :-
+	negate(Ln1,NLn1),
+	non_unit_clause_unit_match(NLn1,CS2),
+	binary_max(CS1,CS2,CSM), !,
+	unit_reso_literals(CSM,Flags1,Lns1,CS3,Flags3,Cn3,Var1,s).
+     unit_reso_literals(CS1,[Flag1|Flags1],[Ln1|Lns1],CS3,[Flag1|Flags3],
+		[Ln1|Cn3],Var1,Var2) :-
+     	unit_reso_literals(CS1,Flags1,Lns1,CS3,Flags3,Cn3,Var1,Var2).
+     unit_reso_literals(_,[],_,_,_,_,_,n) :- !, fail.
+     unit_reso_literals(CS3,[],_,CS3,[],[],_,_).
+
+%%% Update the non-unit clause list.
+     update_trps([],_,Flags3,CS3,Ref1,[us(CS3,Ref1,Flags3,1)|Trps3],
+		Trps3,suc) :- !.
+     update_trps(Cn3,s,Flags3,CS3,Ref1,Trps2,Trps3,_) :-
+	update_trps_1(Flags3,CS3,Ref1,Trps2,Trps3), !.
+     update_trps(_,n,_,_,Ref1,Trps2,Trps2,_) :- erase(Ref1).
+
+%%% If the underlying clause is simplified to unit clause, then 
+%%%	assert it into database as du clause and number it.
+%%% Otherwise, modified one entry in the special list.
+     update_trps_1([Flag2],CS2,Ref1,Trps2,Trps2) :-
+	clause(sent_C(cl(_,_,by(Cn1,V11,V11,_,W1),CI1,CS1,CR1,CT1,CF1,_)),
+		true,Ref1),
+	erase(Ref1),
+	clause_remain_3([Flag2],1,Cn1,W1,CF1,Cn3,W3,CF3),
+	vars_W1_V1(W3,V3),
+	update_trps_CS(CS2,CS1,Cn3,CS3),
+	assert_once(new_unit_clause),
+	next_num(N1),
+	assertz(du(cl(Cn3,V3,W3,CI1,CS3,CR1,CT1,CF3),N1)), !.
+     update_trps_1(Flags3,CS3,Ref1,[us(CS3,Ref1,Flags3,1)|Trps3],Trps3).
+
+%%% Housekeeping clauses.
+%%% Deals with unit clauses.
+     unit_simp_subs_hk(_) :-
+	unit_simp_subs_hk_1, !.
+%%% Modified non-unit clauses.
+     unit_simp_subs_hk(Trps1) :-
+	unit_simp_subs_hk_2(Trps1), !.
+	
+
+%%% Move du clauses to sent_C clauses.
+     unit_simp_subs_hk_1 :-
+	retract(du(DU1,_)),
+	unit_simp_subs_hk_1_d(DU1),
+	fail.
+%%% Move ou clauses to sent_C clauses.
+     unit_simp_subs_hk_1 :-
+	retract(ou(OU1,_)),
+	unit_simp_subs_hk_1_o(OU1),
+	fail.
+
+%%% Modified non-unit clauses.
+     unit_simp_subs_hk_1_d(cl(Cn1,V1,W1,CI1,CS1,CR1,CT1,CF1)) :- 
+	linearize_term(Cn1,Cn3,V31,V32),
+	clause_size(Cn1,CSize1),
+	calculate_priority_clause(Cn1,CS1,CR1,CP1),
+	compute_V_lits(W1,0,CV1),
+	asserta(sent_C(cl(CSize1,CV1,by(Cn3,V31,V32,V1,W1),
+		CI1,CS1,CR1,CT1,CF1,CP1))), !.
+     unit_simp_subs_hk_1_o(OU1) :-
+	asserta(sent_C(OU1)), !.
+
+     unit_simp_subs_hk_2([us(_,_,_,0)|Trps1]) :-
+	!, unit_simp_subs_hk_2(Trps1).
+     unit_simp_subs_hk_2([us(CSM,Ref1,Flags1,1)|Trps1]) :-
+	clause(sent_C(cl(_,_,by(Cn1,V11,V11,_,W1),
+		CI1,CS1,CR1,CT1,CF1,pr(_,_,_,PR1,_))),true,Ref1),
+	erase(Ref1),
+	clause_remain_3(Flags1,1,Cn1,W1,CF1,CnM,W3,CF3),
+	linearize_term(CnM,Cn3,V31,V32),
+	vars_W1_V1(W3,V3),
+	compute_V_lits(W3,0,CV3),
+	clause_size(CnM,CSize1),
+	update_trps_CS(CSM,CS1,CnM,CS3),
+	priority_NewPSPDPL(CnM,CS3,PS3,PD3,PL3),
+	maximum(PS3,PD3,Temp1),
+	maximum(Temp1,PL3,Temp2),
+	maximum(Temp2,PR1,PX3),
+	assertz(sent_C(cl(CSize1,CV3,by(Cn3,V31,V32,V3,W3),CI1,
+		CS3,CR1,CT1,CF3,pr(PS3,PD3,PL3,PR1,PX3)))),
+	!, unit_simp_subs_hk_2(Trps1).
+     unit_simp_subs_hk_2([]).
+	
+     update_trps_CS(CS1,CS2,Cn3,CS3) :-
+	pn_clause(Cn3,F),
+	update_trps_CS_1(F,CS1,CS2,CS3).
+     update_trps_CS(sp(S11,_,_),sp(S21,S22,S23),_,sp(S31,S22,S23)) :-
+	binary_max(S11,S21,S31).
+
+     update_trps_CS_1(p,CS1,CS2,CS3) :-
+	update_trps_CS_1_p(CS1,CS2,CS3), !.
+     update_trps_CS_1(n,CS1,CS2,CS3) :-
+	update_trps_CS_1_n(CS1,CS2,CS3), !.
+
+     update_trps_CS_1_p(sp(S11,_,S13),sp(S21,S22,S23),sp(S31,S22,S33)) :-
+	binary_max(S11,S21,S31),
+	binary_max(S13,S23,S33).
+
+     update_trps_CS_1_n(sp(S11,S12,_),sp(S21,S22,S23),sp(S31,S32,S23)) :-
+	binary_max(S11,S21,S31),
+	binary_max(S12,S22,S32).
+
+     priority_NewPSPDPL(Cn1,CS1,PS,PD,PL) :-
+	slidepriority,
+	depth_coef(DCoef),
+	size_coef(SCoef),
+	literal_coef(LCoef),
+	priority_PS(SCoef,Cn1,PS),
+	priority_PD(DCoef,Cn1,PD),
+	priority_PL(LCoef,Cn1,CS1,PL), !.
+     priority_NewPSPDPL(_,_,0,0,0).
+
+%%% Perform ground unit clause generation.
+     gug_1 :-
+	clause(sent_C(cl(_,CV1,by(Cn1,V11,V11,_,Ws1),CI1,
+		CS1,CR1,CT1,FB1,_)),true,Ref1),
+	CV1 \== 0,
+	length(Cn1,CL1),
+	CL1 is CV1 + 1,
+     	gug_1_1(FB1,Cn1,Ws1,CS1,CR1,CI1,CT1,Ref1),
+	fail.
+     gug_1.
+
+     gug_1_1(FB1,Cn1,Ws1,CS1,CR1,CI1,CT1,Ref1) :-
+	sep_gr_lit_3(Ws1,FB1,Cn1,W21,Ws2,F2,_,L2,Ls2),
+	negate_clause(Ls2,NLs2),
+	clause_part2(CS1,CR1,CSM,CRM),
+	!, gug_1_1_1(NLs2,Ws2,CSM,CRM,CSM2,CRM2),
+	calculate_S([L2],_,CSM,CS2),
+	adjust_userdist(CRM2,CR1,CR2),
+	clause_size([L2],CSize2),
+	calculate_priority_clause([L2],CS2,CR2,CP2),
+	erase(Ref1),
+	assertz(sent_C(cl(CSize2,0,by([L2],[],[],V2,[W21]),
+		CI1,CS2,CR2,CT1,[F2],CP2))), !.
+
+%%% Unify with unit clauses.
+     gug_1_1_1(Cn1,Ws1,CS1,CR1,CS2,CR2) :-
+	sep_gr_lit_2(Ws1,Cn1,W21,Ws2,L2,Ls2),
+	!, gug_unify_unit(L2,CS1,CR1,CSM,CRM),
+	!, gug_1_1_1(Ls2,Ws2,CSM,CRM,CS2,CR2).
+     gug_1_1_1([L1|Ls1],[_|Ws1],CS1,CR1,CS2,CR2) :-
+	gug_unify_unit(L1,CS1,CR1,CSM,CRM),
+	w1_w2(Ws1,Ws2),
+	gug_1_1_1(Ls1,Ws2,CSM,CRM,CS2,CR2).
+     gug_1_1_1([],_,CS2,CR2,CS2,CR2).
+
+%%% Unify with one unit clause.
+     gug_unify_unit(L1,CS1,CR1,CS2,CR2) :-
+	sent_C(cl(_,_,by([L1],V11,V12,_,_),_,CSU,CRU,_,_,_)),
+	unify_lists(V11,V12),
+	onelink_SR(L1,CS1,CR1,CSU,CRU,CS2,CR2).
+
+%%% Perform duplicate deletion.
+%%% Check one clause at a time.
+     duplicate_deletion([Ref1|Refs1],Clist) :-
+	clause(sent_C(cl(CSize1,CN1,by(Cn1,V11,V11,Clist,_),CI1,
+		CS1,CR1,CT1,F1,pr(_,_,PL1,_,PX1))),true,Ref1),
+	duplicate_deletion_1(Clist,CSize1,CN1,Cn1,CI1,CS1,CR1,CT1,F1,
+		PL1,PX1,Ref1,Refs1,RefsR),
+	!,
+	duplicate_deletion(RefsR,Clist).
+     duplicate_deletion([_|Refs1],Clist) :-
+	!, duplicate_deletion(Refs1,Clist).
+     duplicate_deletion([],_).
+	
+%%% Find duplicates.
+     duplicate_deletion_1(Clist,CSize1,CN1,Cn1,CI1,CS1,CR1,CT1,F1,PL1,PX1,
+		Ref1,Refs1,RefsR) :-
+	duplicate_deletion_2(Refs1,Clist,CSize1,CN1,Cn1,CI1,CS1,CR1,CT1,F1,
+		PL1,PX1,CI3,CS3,CR3,CT3,F3,PL3,PX3,Up,RefsR),
+	duplicate_deletion_3(Up,CI3,CS3,CR3,CT3,F3,PL3,PX3,Ref1).
+
+     duplicate_deletion_3(n,_,_,_,_,_,_,_,_) :- !.
+     duplicate_deletion_3(_,CI3,CS3,CR3,CT3,F3,PL3,PX3,Ref1) :-
+	clause(sent_C(cl(CSize1,CN1,BY_1,_,_,_,_,_,pr(PS1,PD1,_,_,_))),
+		true,Ref1),        
+	erase(Ref1),
+	priority_NewPR(CR3,PR3),
+	assertz(sent_C(cl(CSize1,CN1,BY_1,CI3,CS3,CR3,CT3,F3,
+		pr(PS1,PD1,PL3,PR3,PX3)))), !.
+
+%%% Find all duplicates, and modify the information if necessary.
+     duplicate_deletion_2([Ref2|Refs2],Clist,CSize1,CN1,Cn1,CI1,CS1,CR1,
+		CT1,F1,PL1,PX1,CIO,CSO,CRO,CTO,FO,PLO,PXO,Up,RefsR) :-
+	clause(sent_C(cl(CSize1,CN1,by(Cn1,V22,V22,Clist,_),
+		CI2,CS2,CR2,CT2,F2,pr(_,_,PL2,_,PX2))),true,Ref2),
+	min_ind(PL1,PL2,PL3,Up),
+	min_ind(PX1,PX2,PX3,Up),
+	min_Flags_ind(F1,F2,F3,Up),
+	max_CS_ind(CS1,CS2,CS3,Up),
+	min_CR_ind(CR1,CR2,CR3,Up),
+	binary_max_ind(CI1,CI2,CI3,Up),
+	binary_max_ind(CT1,CT2,CT3,Up),
+	erase(Ref2), !,
+	duplicate_deletion_2(Refs2,Clist,CSize1,CN1,Cn1,CI3,CS3,CR3,CT3,F3,
+		PL3,PX3,CIO,CSO,CRO,CTO,FO,PLO,PXO,Up,RefsR).
+     duplicate_deletion_2([Ref2|Refs2],Clist,CSize1,CN1,Cn1,CI1,CS1,CR1,
+		CT1,F1,PL1,PX1,CIO,CSO,CRO,CTO,FO,PLO,PXO,Up,[Ref2|RefsR]) :-
+	duplicate_deletion_2(Refs2,Clist,CSize1,CN1,Cn1,CI1,CS1,CR1,
+		CT1,F1,PL1,PX1,CIO,CSO,CRO,CTO,FO,PLO,PXO,Up,RefsR).
+     duplicate_deletion_2([],_,_,_,_,CIO,CSO,CRO,CTO,FO,PLO,PXO,
+		CIO,CSO,CRO,CTO,FO,PLO,PXO,_,[]).

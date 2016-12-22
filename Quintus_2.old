@@ -1,0 +1,13 @@
+%%% version 2.05.8
+%%%   initial version
+%%%
+
+load_file(X) :-
+  no_style_check(single_var),
+  compile(X).
+
+:- initialization(op(900,fy,[not])).
+:- initialization(op(30,fx,[@])).
+:- initialization(op(100,xfy,[&])).
+:- initialization(op(120,xfy,[#])).
+:- initialization(op(150,xfx,[=>,<=>])).

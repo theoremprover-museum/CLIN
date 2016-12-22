@@ -1,0 +1,1318 @@
+%%% HYPER LINKING
+%%%
+%%% hl_round hyper-linkes the input clauses one round,
+%%% and generates new clauses. These new clauses are not variant 
+%%% to each other, nor variant to any clause in the input clauses.
+%%%
+%%% The strategy here is bottom-up strategy.
+%%% The idea is we find the first mate for the first literal, then 
+%%% find the first mate for the second literal, etc., until we find
+%%% the first mate for the last literal. Then we backtrack for the
+%%% last literal and find the second mate for the last literal, and
+%%% then the last mate for the last literal. Then we backtrack to find
+%%% the second mate for the next to last literal, and so forth, until
+%%% we find the last mate for the first literal.
+%%%
+%%% The disadvantage for this is we can't delete duplicates for the
+%%% intermediate instances. The advanteage for this strategy is that 
+%%% we don't need to store the intermediate instances.
+%%%
+%%% Some comments:
+%%%	(A)
+%%%	supported clause not implies new clause
+%%%	new clause implies supported clause in some strategy
+%%%	distance 0 clause implies supported clause
+%%%	distance 0 clause not implies new clause
+%%%	supported clause not implies distance 0 clause
+%%%	distance 0 clause iff supported input clause or its instances
+%%%	distance 0 clause and its instances implies supported clause
+%%%	(B)	
+%%%	The calculation of distance should be done properly:
+%%%	1. no same literal connects two edges in a path
+%%%		This requirement is not enforced for user support.
+%%%	2. calculate three distances at the same time
+%%%		a. maximum forward distance for negative literals.
+%%%		b. maximum backward distance for positive literals.
+%%%		c. minimum user distance for user supported literals.
+%%%
+%%% Checking the number of distinct variales in a clause:
+%%% 	If an instance has more distichnct variables than constants in the
+%%%       constant list, then print out error message, ignore the instance
+%%%       and go ahead the proof.
+%%%
+%%%   We keep three kinds of clauses. sent_C is the nuclei. sent_T are the
+%%%   instances which are duplicates to sent_C. sent_INST are instances
+%%%   which are not duplicates to sent_C.
+%%%	1. take one sent_C.
+%%%	2. Check an instance against sent_INST, sent_T, sent_C.
+%%%	3. If the instance has no duplicates from neither source, then 
+%%%	 	it is asserted as sent_INST. Increase the clause number 
+%%%		count.
+%%%	4. If the instance has a duplicate in sent_INST:
+%%%	   a. If the clause information of the instance is contained in
+%%%		those of the duplicate, do nothing.
+%%%	   b. If not, then retract the duplicate, and assert a clause sent_INST
+%%%		with updated clause information.
+%%%	5. If the instance has a duplicate in sent_T:
+%%%	   a. If the clause information of the instance is contained in
+%%%               those of the duplicate, do nothing.  
+%%%          b. If not, then retract the duplicate, and assert a clause sent_T
+%%%               with updated clause information.
+%%%	6. If the instance has a duplicate in sent_C, assert it as sent_T.
+%%%	7. do throw-away strategy on sent_C.
+%%%	8. Merge sent_T into sent_C and remove duplicates.
+%%%	9. rename sent_INST to sent_C.
+%%%
+%%% Since we use contradiction checking in the prover (otherwise it is not
+%%%	complete), the following facts hold:
+%%%	1. A nucelus has no unit mates in UR.
+%%%	2. A unit nucleus has no unit mates in U,B,and F.
+%%%
+%%% Unit deletion: If a nucleus literal has a mate from a unit clause, 
+%%%     then we won't record this literal in database with the instance.
+%%% Empty instance detection: The hyper-linking stops whenever an
+%%%	empty instance is generated.
+%%%
+%%% Time control: Before we hyper-link a nucleus, we check if the time
+%%%	is overflowed. If so, stop the hyper-linking and do the other
+%%%	stages with the instances obtained so far.
+%%%
+%%% Shorter nucleus first serve: In order to reduce the number of assertions
+%%%	and deletions with sliding priority, we starts with the shorter
+%%% 	nuclei to do hyper-linking.
+%%%
+%%% Add an option, ground_hyper_link, to accept ground instances.
+%%%	If ground_hyper_link is specified, then
+%%%		we don't throw away nucleus
+%%%		we don't accept non-ground instances.
+%%%
+%%% Don't count ground literals when considering literal bounds.
+%%%	We check this after duplicate checking.
+%%%
+%%% Match ground literals first.
+%%%
+%%% The order of link is determined by the number of non-ground literals
+%%%	in a nucleus, not the number of literals any more, since ground
+%%%	literals do not backtrack.
+%%%     So we change data structure to have a field recording the number
+%%%	of non-ground literals in a clause.
+%%%
+
+     hl_round :- 
+     	not(not(hl_round_fail)), !.
+
+     hl_round_fail :- 
+	cputime(TT1),
+	hl_round0,
+	cputime(TT2),
+	TT3 is TT2 - TT1,
+	update_hyperlink_time(TT3),
+	write_line(5,'Hyper-linking(s): ',TT3),
+	!.
+
+%%% We record the time spent in hyper-linking just done. This time is
+%%% used for controlling the small proof checking.
+     update_hyperlink_time(TT3) :-
+	abolish(last_hyperlink_time,1),
+	assert(last_hyperlink_time(TT3)).
+
+%%% 1. calculate the non-duplicate literal list.
+%%% 2. obtain two literal lists: one is the list of supported literals
+%%%	and the other one is the whole list itself.
+%%% 3. do hyper-linking one nucleus at a time.
+%%% 4. update the clauses in the database.
+     hl_round0 :-
+	litsall_hl,
+	supported_mates,
+	print_litsall,
+	bagof1(RSLit,(US,LBYS,LSS,LRS)^clause(lit_S(US,LBYS,LSS,LRS),
+		true,RSLit),RSLists),
+	bagof1(RGLit,(UG,LBYG,LSG,LRG)^clause(lit_G(UG,LBYG,LSG,LRG),
+		true,RGLit),RGLists),
+	hl_round1(RSLists,RGLists),
+	abolish(lit_S,4),
+	abolish(lit_G,4),
+ 	not(not(update_sentC)), !.
+
+%%% hyper-linking one clause each time.
+%%% starting with the shorter clauses, namely, with nuclei with one
+%%% 	literal, then with 2 literals, and so on, until the nuclei
+%%% 	with largest number of literals.
+     hl_round1(RSLists,RGLists) :-
+	clause_largest_length(N),
+	hl_round1(0,N,RSLists,RGLists).
+
+%%% If time is overflowed or an empty instance is found, stop.
+     hl_round1(N1,N2,RSLists,RGLists) :-
+	get_hl_nucleus(N1,N2,C,RefNucl),
+	hl_clause(C,RefNucl,RSLists,RGLists),
+	check_hl_stop, !.
+     hl_round1(_,_,_,_).
+
+%%% Stop if an empty instance is generated or time overflows.
+     check_hl_stop :-
+	prove_result(unsatisfiable), !.
+     check_hl_stop :-
+	is_time_overflow.
+
+%%% get a nucleus in order of the number of non-ground literals.
+     get_hl_nucleus(N1,N2,cl(CSize1,N1,BY_1,CI1,CS1,CR1,CT1,CF1,CP1),
+		RefNucl) :-
+	clause(sent_C(cl(CSize1,N1,BY_1,CI1,CS1,CR1,CT1,CF1,CP1)),
+		true,RefNucl).
+     get_hl_nucleus(N1,N2,C,RefNucl) :-
+	N1 < N2,
+	NN is N1 + 1, !,
+	get_hl_nucleus(NN,N2,C,RefNucl).
+
+%%% Hyper-link the nucleus.
+%%% If UR round, do nothing if
+%%%	1. the nucleus is not original input clause.
+%%%	2. the nucleus is original input clause, but unit.
+     hl_clause(cl(_,_,by(Cn1,_,_,_,_),0,CS1,_,CT1,_,_),RefNucl,_,_) :- 
+	current_support(sup(_,_,_,1)), 
+     	check_throw_nucleus(0,CT1,Cn1,CS1,RefNucl),
+	!, fail.
+     hl_clause(cl(_,_,by([_],_,_,_,_),1,_,_,_,_,_),_,_,_) :- 
+	current_support(sup(_,_,_,1)), 
+	!, fail.
+     hl_clause(cl(CSize1,_,by(Cn1,V11,V11,V1,W1),CI1,CS1,CR1,CT1,CF1,CP1),
+		RefNucl,RSLists,RGLists) :-
+	print_nucleus(Cn1,V1,CS1,CR1,CF1),
+	decide_unit(Cn1,U),
+     	check_throw_nucleus(CI1,CT1,Cn1,CS1,RefNucl),
+	negate_clause(Cn1,NCn1),
+	!,
+     	hl_clause1(RefNucl,U,CF1,Cn1,NCn1,W1,CS1,CR1,RSLists,RGLists,
+		CF2,Cn2,W2,DFlag,CS2,CR2),
+	process_INST(RefNucl,U,CSize1,CP1,CF2,Cn2,V1,W2,DFlag,CS2,CR2),
+	check_empty_hl(Cn2).
+
+%%% If an empty instance is generated, assert information into database.
+     check_empty_hl([]) :-
+	assert_tryresult('unsatisfiable'),
+	assert_prooftype('HL'), !.
+     check_empty_hl(_).
+
+%%% If sliding priority.
+     process_INST(RefNucl,U,CSize1,CP1,F2,Cn2,V1,W2,DFlag,CS2,CR2) :-
+	slidepriority,
+	!, prio_test(U,CP1,Cn2,DFlag,V1,CS2,CR2,CP2),
+	calculate_new_size(U,CSize1,Cn2,DFlag,V1,CSize2), 
+	make_varstail(U,V1,W2,V2),
+	!, check_numbervars(V2,'Number of variables overflows in instances !'), 
+	!, totalhl_test(RefNucl,U,CSize2,CP2,F2,Cn2,V2,W2,CS2,CR2), !.
+%%% If no sliding priority.
+     process_INST(RefNucl,U,CSize1,CP1,F2,Cn2,V1,W2,DFlag,CS2,CR2) :-
+	calculate_new_size(U,CSize1,Cn2,DFlag,V1,CSize2),
+	make_varstail(U,V1,W2,V2),
+	!, check_numbervars(V2,'Number of variables overflows in instances !'),
+	!, noslide_update_INST(RefNucl,U,CSize2,CP1,F2,Cn2,V2,W2,CS2,CR2), !.
+
+%%% N1 is used for recording if a literal in a instance is unit-deleted
+%%% 	or not. If it is unit deleted, the correponding element at appropriate
+%%% 	position is 1, otherwise it is 0.
+%%% CR1 is separated into two sublists: Ord1 and Ord2. Ord1 are the literals
+%%%	to be linked by supported mates. Ord2 are the literals to be
+%%%	linked by any mates. We linked Ord1 first, then Ord2 for efficiency
+%%%	purpose.
+     hl_clause1(RefNucl,U,F1,Cn1,NCn1,W1,CS1,CR1,RSLists,RGLists,
+		F2,Cn2,W2,DFlag,CS2,CR2) :-
+	clause_part2(CS1,CR1,CSM1,CRM1),
+	matord(NCn1,Ord1,Ord2,W1,WO1,WO2,N1,NOrd1,NOrd2),
+	!,
+     	hl_clause1_2(Ord1,Ord2,WO1,WO2,NOrd1,NOrd2,RefNucl,U,
+		RSLists,RGLists,CSM1,CRM1,CS2,CRM2),
+	hl_clause1_3(N1,F1,Cn1,W1,CR1,CS2,CRM2,F2,Cn2,W2,DFlag,CR2).
+
+%%% If the current round is user support round.
+     hl_clause1_2(Ord1,Ord2,WO1,WO2,NOrd1,NOrd2,RefNucl,U,
+		RSLists,RGLists,CS1,CR1,CS2,CR2) :-
+	current_support(sup(1,0,0,0)),
+	!,
+	hl_user(Ord1,WO1,NOrd1,RefNucl,U,RSLists,RGLists,CS1,CR1,CS2,CR2).
+%%% If the current round is UR support round.
+     hl_clause1_2(Ord1,Ord2,WO1,WO2,NOrd1,NOrd2,RefNucl,U,
+		RSLists,RGLists,CS1,CR1,CS2,CR2) :-
+	current_support(sup(_,_,_,1)),
+	!,
+	hl_ur(Ord1,WO1,NOrd1,RefNucl,U,RSLists,RGLists,CS1,CR1,CS2,CR2).
+%%% Otherwise.
+     hl_clause1_2(Ord1,Ord2,WO1,WO2,NOrd1,NOrd2,RefNucl,U,
+		RSLists,RGLists,CS1,CR1,CS2,CR2) :-
+     	hl_bf(Ord1,Ord2,WO1,WO2,NOrd1,NOrd2,RefNucl,U,RSLists,RGLists,
+		CS1,CR1,CS2,CR2).
+
+%%% For UR, we take one literal unlinked, then link the other literals
+%%%	with unit clauses.
+%%% In order to link ground literals first, we have to change the algorithm.
+%%%  hl_ur([Ln1|Lns1],[0|Ts1],RefNucl,U,RSLists,RGLists,CS1,CR1,CS2,CR2) :-
+%%%	hl_literals(Lns1,U,RefNucl,CS1,CR1,0,RSLists,Ts1,CS2,CR2).
+%%%  hl_ur([Ln1|[Ln2|Lns1]],[T1|Ts1],RefNucl,U,
+%%%		RSLists,RGLists,CS1,CR1,CS2,CR2) :-
+%%%	hl_literal(U,RefNucl,Ln1,CS1,CR1,0,RSLists,T1,CSM,CRM),
+%%%   	hl_ur([Ln2|Lns1],Ts1,RefNucl,U,RSLists,RGLists,CSM,CRM,CS2,CR2).
+%%%
+     hl_ur([Ln1|Lns1],[W1|Ws1],[0|Ts1],RefNucl,U,
+		RSLists,RGLists,CS1,CR1,CS2,CR2) :-
+	hl_literals(Lns1,Ws1,U,RefNucl,CS1,CR1,0,RSLists,Ts1,CS2,CR2).
+     hl_ur([Ln1|[Ln2|Lns1]],[W1|Ws1],[T1|Ts1],RefNucl,U,
+		RSLists,RGLists,CS1,CR1,CS2,CR2) :-
+     	hl_ur_1([Ln2|Lns1],Ws1,Ts1,RefNucl,U, RSLists,RGLists,CS1,CR1,
+		[Ln1|KL1],[W1|KW1],[T1|KT1],KL1,KW1,KT1,CS2,CR2).
+     hl_ur_1([Ln1|Lns1],[W1|Ws1],[0|Ts1],RefNucl,U, RSLists,RGLists,CS1,CR1,
+		KL1,KW1,KT1,Lns1,Ws1,Ts1,CS2,CR2) :-
+	hl_literals(KL1,KW1,U,RefNucl,CS1,CR1,0,RSLists,KT1,CS2,CR2).
+     hl_ur_1([Ln1|[Ln2|Lns1]],[W1|Ws1],[T1|Ts1],RefNucl,U, RSLists,RGLists,
+		CS1,CR1,KL1,KW1,KT1,[Ln1|KL2],[W1|KW2],[T1|KT2],CS2,CR2) :-
+     	hl_ur_1([Ln2|Lns1],Ws1,Ts1,RefNucl,U, RSLists,RGLists,
+		CS1,CR1,KL1,KW1,KT1,KL2,KW2,KT2,CS2,CR2).
+
+%%% For user support, we link one literal with user supported mates, then
+%%%	link the other literals with any mates.
+%%% In order to link ground literals first, we have to change the algorithm.
+%%%  hl_user([Ln1|Lns1],[T1|Ts1],RefNucl,U,RSLists,RGLists,CS1,CR1,CS2,CR2) :-
+%%%	hl_literal(U,RefNucl,Ln1,CS1,CR1,0,RSLists,T1,CSM,CRM),
+%%%	hl_literals(Lns1,U,RefNucl,CSM,CRM,1,RGLists,Ts1,CS2,CR2).
+%%%  hl_user([Ln1|[Ln2|Lns1]],[T1|Ts1],RefNucl,U,
+%%%		RSLists,RGLists,CS1,CR1,CS2,CR2) :-
+%%%	hl_literal(U,RefNucl,Ln1,CS1,CR1,1,RGLists,T1,CSM,CRM),
+%%%   	hl_user([Ln2|Lns1],Ts1,RefNucl,U,RSLists,RGLists,CSM,CRM,CS2,CR2).
+%%%
+     hl_user([Ln1|Lns1],[W1|Ws1],[T1|Ts1],RefNucl,U,
+                RSLists,RGLists,CS1,CR1,CS2,CR2) :-
+	hl_user_literal_U(W1,Ws1,U,RefNucl,Ln1,CS1,CR1,0,RSLists,T1,Ws2,
+		CSM,CRM),
+	hl_literals(Lns1,Ws2,U,RefNucl,CSM,CRM,1,RGLists,Ts1,CS2,CR2).
+     hl_user([Ln1|[Ln2|Lns1]],[W1|Ws1],[T1|Ts1],RefNucl,U,
+                RSLists,RGLists,CS1,CR1,CS2,CR2) :-
+     	hl_user_1([Ln2|Lns1],Ws1,Ts1,RefNucl,U,RSLists,RGLists,CS1,CR1,
+		[Ln1|KL1],[W1|KW1],[T1|KT1],KL1,KW1,KT1,CS2,CR2).
+
+     hl_user_1([Ln1|Lns1],[W1|Ws1],[T1|Ts1],RefNucl,U, RSLists,RGLists,CS1,CR1,
+		KL1,KW1,KT1,Lns1,Ws1,Ts1,CS2,CR2) :-
+	hl_user_literal_U(W1,Ws1,U,RefNucl,Ln1,CS1,CR1,0,RSLists,T1,Ws2,
+		CSM,CRM),
+	hl_literals(KL1,KW1,U,RefNucl,CSM,CRM,1,RGLists,KT1,CS2,CR2).
+     hl_user_1([Ln1|[Ln2|Lns1]],[W1|Ws1],[T1|Ts1],RefNucl,U,RSLists,RGLists,
+		CS1,CR1,KL1,KW1,KT1,[Ln1|KL2],[W1|KW2],[T1|KT2],CS2,CR2) :-
+     	hl_user_1([Ln2|Lns1],Ws1,Ts1,RefNucl,U,RSLists,RGLists,
+		CS1,CR1,KL1,KW1,KT1,KL2,KW2,KT2,CS2,CR2).
+
+     hl_user_literal_U(W1,Ws1,U,RefNucl,Ln1,CS1,CR1,Type,RSLists,T1,Ws1,
+		CS2,CR2) :-
+	var(W1),
+	!, hl_literal(U,RefNucl,Ln1,CS1,CR1,Type,RSLists,T1,CS2,CR2), !.
+     hl_user_literal_U(_,Ws1,U,RefNucl,Ln1,CS1,CR1,Type,RSLists,T1,Ws2,
+		CS2,CR2) :-
+	hl_literal(U,RefNucl,Ln1,CS1,CR1,Type,RSLists,T1,CS2,CR2),
+	w1_w2(Ws1,Ws2).
+
+%%% For forward support, we link all negative literals with forward
+%%% 	supported mates, then link the other literals with any mates.
+%%% For backward support, we link all positive literals with backward
+%%% 	supported mates, then link the other literals with any mates.
+     hl_bf(Ord1,Ord2,WO1,WO2,NOrd1,NOrd2,
+		RefNucl,U,RSLists,RGLists,CS1,CR1,CS2,CR2) :-
+	hl_literals(Ord1,WO1,U,RefNucl,CS1,CR1,0,RSLists,NOrd1,CSM,CRM),
+	w1_w2(WO2,WO3),
+	hl_literals(Ord2,WO3,U,RefNucl,CSM,CRM,1,RGLists,NOrd2,CS2,CR2).
+
+%%% Check if it is user supported if it is required so.
+%%% Delete all literals that are unit deleted, i.e., the litearls
+%%%	whose corresponding entries in N1 are 1s.
+%%% Delete any duplicate literals in the instance.
+%%% Check literal bound.
+%%% Adjust user distance.
+%%% Check relevance bound.
+     hl_clause1_3(N1,F1,Cn1,W1,CR1,CS2,CRM2,F2,Cn2,W2,DFlag,CR2) :-
+	check_supp_u(CS2),
+	literals_remain_3(N1,Cn1,W1,F1,CnM,WM,FM,DFlag), 
+	delete_replicate_literals_3(CnM,WM,FM,Cn2,W2,F2),
+	adjust_userdist(CRM2,CR1,CR2), 
+	!, check_rel_clause(CR1,Cn2,CR2), !.
+
+%%% LITSALL_HL ROUTINES:
+%%%
+%%% The format for literal is:
+%%%	lit_G(U,lby(Ln1,V21,V22,Wn2),CS1,CR1)
+%%% U = 1 if the literal comes from a unit clause.
+%%% U = 0 if the literal comes from a non-unit clause.
+%%%
+%%% The idea is that we collect a set of literals. No repetition of the
+%%% literals are allowed. If two literals coming from different sources
+%%% and have different S and R, then we update S and R to reflect the
+%%% least distance to the support sets for calculating relevance and the 
+%%% most possibility to be supported for hyper-linking.
+%%%
+%%% Comments:
+%%%	The following procedure is used if unit_resolution is specified.
+%%%	If a literal comes from a unit clause, it is inserted into the
+%%%		database directly without duplicate checking because
+%%%		we know that there should be no duplicates after the
+%%%		unit subsumption and unit simplification.
+%%%	If a literal comes from a non-unit clause, we don't need to 
+%%%		check the duplicates against the unit-clause literals
+%%%		because of the reason stated above. However, we need
+%%%		to check duplicates against the other non-unit-clause 
+%%%		literals.
+%%% For efficiency, we do for non-unit clauses first, then for unit clauses.
+%%%
+%%% Instance deletion: If instance deletion is specified, then we do the
+%%%	following operation. If a literal L1 is an instance of L2, and
+%%%	L1 is not a unit clause, then delete L1.
+%%%	
+
+     litsall_hl :-
+	not(not(litsall_hl_1)), !.
+
+     litsall_hl_1 :-
+	current_support(sup(_,_,_,1)),
+	litsall_hl_ur, !.
+     litsall_hl_1 :-
+	litsall_hl_ubf,
+     	instdel_lits, !.
+
+%%% If UR is specified, then we only have to find the literals from unit
+%%%	clauses.
+%%% Furthermore, we make the literal list as lit_S directly.
+     litsall_hl_ur :-
+	sent_C(cl(_,_,by([Ln1],V11,V12,_,[Wn1]),_,CS1,CR1,_,_,_)),
+	assertz(lit_S(1,lby(Ln1,V11,V12,Wn1),CS1,CR1)),
+	fail.
+     litsall_hl_ur.
+
+%%% If the round is not UR round.
+%%% litsall_hl_ubf1(T1,T2):
+%%% 	T1 means the existing lit_G(T1,...) in database.
+%%%	T2 means the coming lit_G(T2,...).
+     litsall_hl_ubf :-
+	litsall_hl_ubf1(0,0),
+	litsall_hl_ubf2, !.
+
+%%% Find literals for non-unit clauses.
+     litsall_hl_ubf1(T1,T2) :-	
+	sent_C(cl(_,_,by([Ln1,Ln2|Lns1],V11,V12,_,W1),_,CS1,CR1,_,_,_)),
+	litsall_hl_ubf1([Ln1,Ln2|Lns1],V11,V12,W1,CS1,CR1,T1,T2),
+	fail.
+     litsall_hl_ubf1(_,_).
+
+%%% Process one literal each time.
+     litsall_hl_ubf1([],_,_,_,_,_,_,_).
+     litsall_hl_ubf1([Ln1|Lns1],V11,V12,[Wn1|Wns1],CS1,CR1,T1,T2) :-
+	\+ lit_copy(Ln1,V11,V12,Wn1,CS1,CR1,T1,T2),
+	assertz(lit_G(T2,lby(Ln1,V11,V12,Wn1),CS1,CR1)),
+	!,
+	litsall_hl_ubf1(Lns1,V11,V12,Wns1,CS1,CR1,T1,T2).
+     litsall_hl_ubf1([Ln1|Lns1],V11,V12,[Wn1|Wns1],CS1,CR1,T1,T2) :-
+	!,				% green cut.
+	litsall_hl_ubf1(Lns1,V11,V12,Wns1,CS1,CR1,T1,T2).
+
+%%% Check duplicates.
+     lit_copy(Ln1,V11,V11,Wn1,CS1,CR1,T1,T2) :-
+	const_list(Wn1),
+	lit_G(T1,lby(Ln1,V21,V21,Wn2),CS2,CR2),
+	const_list(Wn2),
+	binary_max_ind(T1,T2,T3,Up),
+	max_CS_ind(CS2,CS1,CS3,Up),
+	min_CR_ind(CR2,CR1,CR3,Up),
+	lit_copy_1(Up,CS3,CR3,T3,Ln1).
+
+     lit_copy_1(n,_,_,_,_) :- !.
+     lit_copy_1(_,CS3,CR3,T3,Ln1) :-
+	clause(lit_G(_,lby(Ln1,V21,V21,Wn2),_,_),true,Ref2),
+	const_list(Wn2),
+	clause(lit_G(_,LBY_2,_,_),true,Ref2),
+	erase(Ref2),
+	assertz(lit_G(T3,LBY_2,CS3,CR3)), !.
+
+%%% Find literals of unit clauses.
+%%% If unit resolution is specified, we don't need to check the duplicates
+%%%	for the literals from unit clauses.
+     litsall_hl_ubf2 :-
+	sent_C(cl(_,_,by([Ln1],V11,V12,_,[Wn1]),_,CS1,CR1,_,_,_)),
+	assertz(lit_G(1,lby(Ln1,V11,V12,Wn1),CS1,CR1)),
+	fail.
+     litsall_hl_ubf2.
+
+%%% Delete literal instances.
+%%% To check if a literal D is an instance of C, there are 4 cases:
+%%% 1. D unit, C unit. Impossible because of unit subsumption.
+%%% 2. D unit, C not unit. Do not delete D.
+%%% 3. D not unit, C unit. Impossible because of unit subsumption.
+%%% 4. D not unit, C not unit. Only this case has to be considered.	
+     instdel_lits :-
+	\+ delete_all_instances,
+	\+ delete_nf_instances, !.
+     instdel_lits :-
+	instdel_lits_1.
+
+     instdel_lits_1 :-
+	lit_G(0,lby(Ln1,V11,V11,Wn1),CS1,CR1),
+	const_list(Wn1),
+	retract_lit_G(LBY2,CS2,CR2),
+	instdel_lits_ckinst(Ln1,CS1,CR1,lit_S(0,LBY2,CS2,CR2)), fail.
+     instdel_lits_1 :-
+	retract(lit_S(T,LBY,S,R)),
+	assertz(lit_G(T,LBY,S,R)),
+	fail.
+     instdel_lits_1.
+
+     retract_lit_G(LBY2,CS2,CR2) :-
+	retract(lit_G(0,LBY2,CS2,CR2)), !.
+
+     instdel_lits_ckinst(Ln1,CS1,CR1,L1) :-
+	delete_all_instances,
+	instdel_lits_ckinst_all(Ln1,CS1,CR1,L1), !.
+     instdel_lits_ckinst(Ln1,CS1,CR1,L1) :-
+	delete_nf_instances,
+	instdel_lits_ckinst_nf(Ln1,CS1,CR1,L1), !.
+
+     instdel_lits_ckinst_all(Ln1,CS1,CR1,_) :-
+	instdel_lits_lit_inst(Ln1,CS1,CR1).
+     instdel_lits_ckinst_all(_,_,_,L1) :-
+	assertz(L1).
+
+     instdel_lits_ckinst_nf(Ln1,sp(S11,S12,0),CR1,_) :-
+	instdel_lits_lit_inst(Ln1,sp(S11,S12,0),CR1).
+     instdel_lits_ckinst_nf(_,_,_,L1) :-
+	assertz(L1).
+
+     instdel_lits_lit_inst(Ln1,CS1,CR1) :-
+	lit_G(0,lby(Ln1,V21,V21,_),CS2,CR2),
+	instdel_lits_lit_inst_2('G',CS1,CR1,Ln1,CS2,CR2).
+     instdel_lits_lit_inst(Ln1,CS1,CR1) :-
+	lit_S(0,lby(Ln1,V21,V21,_),CS2,CR2),
+	instdel_lits_lit_inst_2('S',CS1,CR1,Ln1,CS2,CR2).
+
+     instdel_lits_lit_inst_2(_,sp(1,_,_),_,_,sp(0,_,_),_) :- !, fail.
+     instdel_lits_lit_inst_2(_,sp(0,1,_),_,_,sp(_,0,_),_) :- !, fail.
+     instdel_lits_lit_inst_2(T,CS1,CR1,Ln1,CS2,CR2) :-
+	max_CS_ind(CS2,CS1,CS3,Up),
+	min_CR_ind(CR2,CR1,CR3,Up),
+	instdel_lits_lit_inst_1(T,Up,Ln1,CS3,CR3).
+
+     instdel_lits_lit_inst_1(_,n,_,_,_) :- !.
+     instdel_lits_lit_inst_1('G',_,Ln1,CS3,CR3) :-
+	clause(lit_G(0,lby(Ln1,V21,V21,_),_,_),true,Ref2),
+	clause(lit_G(0,LBY2,_,_),true,Ref2),
+	erase(Ref2),
+	assertz(lit_G(0,LBY2,CS3,CR3)).
+     instdel_lits_lit_inst_1('S',_,Ln1,CS3,CR3) :-
+	clause(lit_S(0,lby(Ln1,V21,V21,_),_,_),true,Ref2),
+	clause(lit_S(0,LBY2,_,_),true,Ref2),
+	erase(Ref2),
+	assertz(lit_S(0,LBY2,CS3,CR3)).
+
+%%% SUPPORTED_MATES
+%%%
+%%% Find out supported mates.
+%%% If UR then do nothing.
+     supported_mates :-
+	current_support(sup(_,_,_,1)), !.
+     supported_mates :-
+	current_support(sup(1,0,0,0)),
+	supported_mates_u, !.
+     supported_mates :-
+	current_support(sup(_,1,0,_)),
+	supported_mates_b, !.
+     supported_mates :-
+	current_support(sup(_,0,1,_)),
+	supported_mates_f, !.
+     supported_mates :-
+	current_support(sup(_,1,1,_)),
+	supported_mates_bf.
+
+%%% Find out user supported literals.
+     supported_mates_u :-
+	lit_G(UG,P,sp(1,S2,S3),R),
+	assertz(lit_S(UG,P,sp(1,S2,S3),R)),
+	fail.
+     supported_mates_u.
+
+%%% Find out backward supported negative literals.
+     supported_mates_b :-
+	lit_G(UG,lby(P,V11,V12,W1),sp(S1,1,S3),R),
+	negative_lit(P),
+	assertz(lit_S(UG,lby(P,V11,V12,W1),sp(S1,1,S3),R)),
+	fail.
+     supported_mates_b.
+
+%%% Find out forward supported positive literals.
+     supported_mates_f :-
+	lit_G(UG,lby(P,V11,V12,W1),sp(S1,S2,1),R),
+	\+ negative_lit(P),
+	assertz(lit_S(UG,lby(P,V11,V12,W1),sp(S1,S2,1),R)),
+	fail.
+     supported_mates_f.
+
+%%% Find out backward supported negative and forward supported 
+%%% 	positive literals.
+     supported_mates_bf :-
+	supported_mates_b,
+	leave_mates_f.
+
+     leave_mates_f :-
+	clause(lit_G(_,lby(P,_,_,_),sp(_,_,S3),_),true,Ref1),
+	\+ positive_f_mate(P,S3),
+	erase(Ref1),
+	fail.
+     leave_mates_f.
+
+     positive_f_mate(P,1) :-
+	\+ negative_lit(P).
+
+%%% UPDATE_SENTC
+%%%
+%%% 1. duplicate checking
+%%% 2. copying sent_INST.
+%%%	
+
+     update_sentC :-
+	const_list(Clist),
+	update_sentC_1(Clist),
+	sentINST_to_sentC_a.
+
+%%% Pick one sent_T at a time.
+     update_sentC_1(Clist) :-
+	retract(sent_T(C1)),
+	update_sentC_3(C1,Clist),
+	fail.
+     update_sentC_1(_).
+
+%%% Duplicate check against sent_C.
+     update_sentC_3(cl(CSize1,CN1,by(Cn1,V11,V11,Clist,_),_,CS1,CR1,
+		CT1,F1,pr(_,_,PL1,_,PX1)),Clist) :-
+	sent_C(cl(CSize1,CN1,by(Cn1,V21,V21,Clist,_),CI2,CS2,CR2,CT2,F2,
+		pr(_,_,PL2,_,PX2))),
+	min_ind(PL2,PL1,PL3,Up),
+	min_ind(PX2,PX1,PX3,Up),
+	binary_max_ind(CT2,CT1,CT3,Up),
+	min_Flags_ind(F2,F1,F3,Up),
+	max_CS_ind(CS2,CS1,CS3,Up),
+	min_CR_ind(CR2,CR1,CR3,Up),
+	update_sentC_31(Up,Cn1,Clist,PL3,PX3,F3,CS3,CR3,CI2,CT3), !.
+     update_sentC_3(C1,_) :-
+	asserta(sent_C(C1)), !.
+
+
+%%% If the information is not changed, do nothing.
+     update_sentC_31(n,_,_,_,_,_,_,_,_,_).
+     update_sentC_31(_,Cn1,Clist,PL3,PX3,F3,CS3,CR3,CI2,CT3) :-
+	clause(sent_C(cl(_,_,by(Cn1,V21,V21,Clist,_),_,_,_,_,_,_)),true,Ref2),
+	clause(sent_C(cl(CSize2,CN2,BY_2,_,_,_,_,_,pr(PS2,PD2,_,_,_))),
+		true,Ref2),
+	erase(Ref2),
+	priority_NewPR(CR3,PR3),
+	asserta(sent_C(cl(CSize2,CN2,BY_2,CI2,CS3,CR3,CT3,F3,
+		pr(PS2,PD2,PL3,PR3,PX3)))).
+
+%%% SLIDING PRIORITY
+%%%
+%%% priority test.
+%%% Calculate priority for the instance.
+%%% Check if the priority computed is larger than the current priority
+%%%	bound.
+     prio_test(U,CP1,Cn2,DL,V1,CS2,CR2,CP2) :-
+	calculate_priority_INST(U,CP1,Cn2,DL,V1,CS2,CR2,CP2),
+	priority_bound(PrioBound),
+	!,
+	check_prioritybound(CP2,PrioBound).
+
+%%% If the nucleus is unit clause and the instance is not empty.
+     calculate_priority_INST(1,pr(PS1,PD1,_,_,PX1),[Ln2],_,_,CS2,CR2,
+		pr(PS1,PD1,PL2,PR2,PX2)) :-
+	literal_coef(LCoef),
+	relevance_coef(RCoef),
+	priority_PL(LCoef,[Ln2],CS2,PL2),
+	maximum(PX1,PL2,XX1),
+	priority_PR(RCoef,CR2,PR2),
+	maximum(XX1,PR2,PX2), !.
+%%% If the nuclues if ground.
+     calculate_priority_INST(_,pr(PS1,PD1,_,_,PX1),Cn2,0,V1,CS2,CR2,
+		pr(PS1,PD1,PL2,PR2,PX2)) :-
+	var(V1),
+	literal_coef(LCoef),
+	relevance_coef(RCoef),
+	priority_PL(LCoef,Cn2,CS2,PL2),
+	maximum(PX1,PL2,XX1),
+	priority_PR(RCoef,CR2,PR2),
+	maximum(XX1,PR2,PX2), !.
+%%% Otherwise.
+     calculate_priority_INST(_,_,Cn2,_,_,CS2,CR2,pr(PS,PD,PL,PR,P)) :-
+	depth_coef(DCoef),
+	size_coef(SCoef),
+	literal_coef(LCoef),
+	relevance_coef(RCoef),
+	priority_PS(SCoef,Cn2,PS),
+        priority_PD(DCoef,Cn2,PD),
+        priority_PL(LCoef,Cn2,CS2,PL),
+        priority_PR(RCoef,CR2,PR),
+        priority_clause(PS,PD,PL,PR,P), !.
+
+%%% If the priority of the instance M is larger than the current 
+%%%	priority bound, discard M.
+     check_prioritybound(pr(_,_,_,_,P),PrioBound) :-
+	P =< PrioBound.
+     check_prioritybound(_,_) :-
+	assert_once(over_priohl), !, fail.
+
+%%% If the hyper-amtch is a duplicate, do nothing.
+     totalhl_test(_,_,CSize2,CP2,F2,Cn2,V2,_,CS2,CR2) :-
+	update_INST(CSize2,CP2,F2,Cn2,V2,CS2,CR2), !.
+%%% If the instance is not a duplicate, check the number of clauses
+%%%	already in database.
+     totalhl_test(RefNucl,U,CSize2,CP2,F2,Cn2,V2,W1,CS2,CR2) :-
+	prio_parameters(TotalHm,ExpectWU,TotalWU), !,
+	totalhl_test1(hl,RefNucl,U,CSize2,CP2,F2,Cn2,V2,W1,CS2,CR2,
+		TotalHm,ExpectWU,TotalWU), !.
+
+%%% Obtain some information from database.
+     prio_parameters(TotalHm,ExpectWU,TotalWU) :-
+	total_numhl(TotalHm),
+	wu_bound(ExpectWU),
+	total_wu(TotalWU).
+
+%%% Test if the number of total clauses in the session exceeds the clause
+%%% number bound.
+%%% If the number of total clauses doesn't exceed the clause number bound, then
+%%% update counters and assert the instance.
+     totalhl_test1(Type,RefNucl,U,CSize2,CP2,F2,Cn2,V2,W1,CS2,CR2,
+		TotalHm_1,ExpectWU,TotalWU_1) :-
+	add_PT2(CP2,TotalWU_1,TotalWU_2),
+	TotalWU_2 =< ExpectWU,
+	TotalHm_2 is TotalHm_1 + 1,
+	update_numhl_wu(TotalHm_2,TotalWU_2),
+	update_priowu(CP2),
+	proc_C(U,RefNucl,Cn2,V2,W1,CN2,Cn3,V21,V22,V3,W2),
+	!, check_literalbound(Type,CN2,CS2),
+	print_INST(Cn2,V2,CS2,CR2,F2),
+	assert_an_INST(Type,CSize2,CN2,by(Cn3,V21,V22,V3,W2),CS2,CR2,F2,CP2), !.
+%%% If the number of total clauses exceeds the clause number bound, then
+%%% find out the maximum priority of the clauses in the database.
+     totalhl_test1(Type,RefNucl,U,CSize2,CP2,F2,Cn2,V2,W1,CS2,CR2,
+		TotalHm_1,ExpectWU,TotalWU_1) :-
+	max_priority(MaxPrio),
+	retract(prio_wu(MaxPrio,MaxNum,WUMaxPrio)),
+	MaxPrioMinusOne is MaxPrio - 1,
+	update_priority_bound(MaxPrioMinusOne),
+	rmhl_prio(MaxPrio),
+	totalhl_test2(Type,RefNucl,U,CSize2,CP2,F2,Cn2,V2,W1,CS2,CR2,
+		TotalHm_1,TotalWU_1,MaxPrio,MaxNum,WUMaxPrio).
+
+%%% Make 0 for instance from hyper-linking, and 1 for instance of replace rules.
+     assert_an_INST(hl,CSize2,CN2,BY2,CS2,CR2,F2,CP2) :-
+	asserta(sent_INST(cl(CSize2,CN2,BY2,0,CS2,CR2,0,F2,CP2))).
+     assert_an_INST(_,CSize2,CN2,BY2,CS2,CR2,F2,CP2) :-
+	asserta(sent_INST(cl(CSize2,CN2,BY2,0,CS2,CR2,1,F2,CP2))).
+
+%%% Update total number of clauses and work units.
+     update_numhl_wu(TotalHm_2,TotalWU_2) :-
+	retract(total_numhl(_)),
+	retract(total_wu(_)),
+	assert(total_numhl(TotalHm_2)),
+	assert(total_wu(TotalWU_2)).
+
+%%% Update the number of clauses with particular priority,
+%%%	the priority itself, and the work-units of the priority.
+     update_priowu(CP2) :-
+	retract_priowu(CP2,NumHm_1,WU_1),
+	add_PT2(CP2,WU_1,WU_2),
+	NumHm_2 is NumHm_1 + 1,
+	assert_priowu(CP2,NumHm_2,WU_2).
+
+     retract_priowu(pr(_,_,_,_,Prio),NumHm,WU) :-
+	retract(prio_wu(Prio,NumHm,WU)), !.
+     retract_priowu(_,0,0).
+
+     assert_priowu(pr(_,_,_,_,Prio),NewNumHm,NewWU) :-
+	assert(prio_wu(Prio,NewNumHm,NewWU)).
+
+%%% Update current priority bound.
+     update_priority_bound(MaxPrioMinusOne) :-
+	retract(priority_bound(_)),
+	assert(priority_bound(MaxPrioMinusOne)).
+
+%%% Find the maximum priority.
+     max_priority(MaxPrio) :-
+	bagof1(P,(N1,N2)^prio_wu(P,N1,N2),Ps),
+	max_list(Ps,MaxPrio).
+
+%%% If the priority is identical to the largest priority.
+     totalhl_test2(_,_,_,_,pr(_,_,_,_,MaxPrio),_,_,_,_,_,_,
+		TotalHm_1,TotalWU_1,MaxPrio,MaxNum,WUMaxPrio) :-
+	TotalHm_2 is TotalHm_1 - MaxNum,
+	TotalWU_2 is TotalWU_1 - WUMaxPrio,
+     	update_numhl_wu(TotalHm_2,TotalWU_2), !.
+%%% If the priority is not identical to the largest priority.
+     totalhl_test2(Type,RefNucl,U,CSize2,CP2,F2,Cn2,V2,W1,CS2,CR2,
+		TotalHm_1,TotalWU_1,MaxPrio,MaxNum,WUMaxPrio) :-
+	TotalHm_2 is TotalHm_1 - MaxNum + 1,
+	YY is TotalWU_1 - WUMaxPrio,
+	add_PT2(CP2,YY,TotalWU_2),
+     	update_numhl_wu(TotalHm_2,TotalWU_2),
+    	update_priowu(CP2),
+	proc_C(U,RefNucl,Cn2,V2,W1,CN2,Cn3,V21,V22,V3,W2),
+	!, check_literalbound(Type,CN2,CS2),
+	print_INST(Cn2,V2,CS2,CR2,F2),
+	assert_an_INST(Type,CSize2,CN2,by(Cn3,V21,V22,V3,W2),CS2,CR2,F2,CP2), !.
+
+     add_PT2(pr(_,_,_,_,PT),Old,New) :-
+	New is Old + PT, !.
+
+%%% Delete clauses having P too big and it is not an input clause.
+     rmhl_prio(P) :-
+	retract(sent_C(cl(_,_,_,0,_,_,_,_,pr(_,_,_,_,P)))),
+	fail.
+     rmhl_prio(P) :-
+	retract(sent_INST(cl(_,_,_,0,_,_,_,_,pr(_,_,_,_,P)))),
+	fail.
+     rmhl_prio(P) :-
+	retract(sent_T(cl(_,_,_,0,_,_,_,_,pr(_,_,_,_,P)))),
+	fail.
+     rmhl_prio(_) :-
+     	assert_once(over_priohl).
+
+%%% Calculate size for instance.
+%%% Unit nucleus.
+     calculate_new_size(1,CSize1,[_],_,_,CSize1) :- !.
+%%% Empty instance.
+     calculate_new_size(_,_,[],_,_,0) :- !.
+%%% Ground nucleus and no literal deletion.
+     calculate_new_size(_,CSize1,_,0,V1,CSize1) :- var(V1), !.
+%%% Otherwise.
+     calculate_new_size(_,_,Cn2,_,_,CSize2) :-
+	clause_size(Cn2,CSize2), !.
+
+%%% Nucleus is unit.
+     proc_C(1,Ref,[_],_,_,CN3,Cn3,V31,V32,V3,W3) :-
+	clause(sent_C(cl(_,CN3,by(Cn3,V31,V32,V3,W3),_,_,_,_,_,_)),
+		true,Ref), !.
+%%% Empty instance.
+     proc_C(_,_,[],_,_,0,[],[],[],V3,[W3]) :- !.
+%%% nucleus is not unit but instance is ground.
+     proc_C(_,_,Cn2,V2,_,0,Cn2,[],[],V3,W3) :-
+	var(V2), 
+	same_number_W1(Cn2,W3), !.			
+%%% Otherwise linearize the instance.
+%%% NOTE that we have already make the nucleus non-linearized by setting
+%%%		V11 = V12
+%%% 	before.
+     proc_C(_,_,Cn2,V2,W2,CV3,Cn3,V31,V32,V2,W3) :-  
+	linearize_term(Cn2,Cn3,V31,V32),
+	w1_w2(W2,W3),
+	compute_V_lits(W3,0,CV3).
+
+%%% Take as many entries as Cn2 from W2.
+     same_number_W1([_|Cn2],[_|Ws3]) :-
+     	same_number_W1(Cn2,Ws3).
+     same_number_W1([],[]).
+
+%%% Calculate new W1 from old W1.
+     w1_w2([W2|Ws2],[W3|Ws3]) :-
+	vars_V1_V2(W2,W3), !,
+	w1_w2(Ws2,Ws3).
+     w1_w2([],[]).
+
+%%% Calculate vars tail for instances.
+%%% Unit instance.
+     make_varstail(1,V1,[_],V1) :- !.
+%%% empty instance.
+     make_varstail(_,_,[],V1) :- !.
+     make_varstail(_,_,W1,V2) :-
+	vars_W1_V1(W1,V2), !.
+
+%%% vars_V1_V2 calculates variable list V2 from a variable list V1.
+%%% V1 is already a form with tail.
+%%% V1 is for an instance, it may not be a variable list due to the 
+%%%	unification of nucleus to its mates.
+%%% V2 keeps the tail of V1.
+
+     vars_V1_V2(V1,V1) :- var(V1), !.
+     vars_V1_V2(V1,V2) :-
+	vars_V1_V2(V1,[],_,V2,Hole), !.
+
+     vars_V1_V2(V,_,_,Hole,Hole) :- var(V), !.
+     vars_V1_V2([L1|Ls1],Sofar_in,Sofar_out,V2,Hole) :-
+	vars_V1_V2_elem(L1,Sofar_in,Sofar_mid,V2,Hole1),
+	!,
+	vars_V1_V2(Ls1,Sofar_mid,Sofar_out,Hole1,Hole).
+
+     vars_V1_V2_elem(Term, Sofar_in, Sofar_in,Hole,Hole) :- 
+	atomic(Term), !.
+     vars_V1_V2_elem(Term, Sofar_in, Sofar_in,Hole,Hole) :- 
+	var(Term),
+	identical_member(Term, Sofar_in), !.
+     vars_V1_V2_elem(Term, Sofar_in, [Term|Sofar_in],[Term|Hole],Hole) :-
+     	var(Term), !.
+     vars_V1_V2_elem(Term, Sofar_in, Sofar_out,V2,Hole) :- 
+	functor(Term, _, N),
+	vars_V1_V2_elem(0,N,Term,Sofar_in,Sofar_out,V2,Hole).
+
+     vars_V1_V2_elem(N,N,_,S,S,Hole,Hole) :- !.
+     vars_V1_V2_elem(N1,N2,Term,Sofar_in,Sofar_out,V2,Hole) :-
+	M is N1+1,
+	arg(M,Term,Arg),
+	vars_V1_V2_elem(Arg,Sofar_in,Sofar_mid,V2,Hole1),
+	!,
+	vars_V1_V2_elem(M,N2,Term,Sofar_mid,Sofar_out,Hole1,Hole).
+
+%%% vars_W1_V1 calculates V1 from W1.
+     vars_W1_V1(W1,V1) :-
+	vars_W1_V1(W1,[],_,V1,Hole).
+
+     vars_W1_V1([W1|Ws1],Sofar_In,Sofar_Out,V1,Hole) :-
+	vars_W1_V1_2(W1,Sofar_In,Sofar_Mid,V1,Hole1), !,
+	vars_W1_V1(Ws1,Sofar_Mid,Sofar_Out,Hole1,Hole).
+     vars_W1_V1([],_,_,Hole,Hole).
+
+     vars_W1_V1_2(W1,Sofar_In,Sofar_In,Hole,Hole) :- var(W1), !.
+     vars_W1_V1_2([W1|Ws1],Sofar_In,Sofar_Out,V1,Hole) :- 
+	vars_V1_V2_elem(W1,Sofar_In,Sofar_Mid,V1,Hole1),
+	!,
+	vars_W1_V1_2(Ws1,Sofar_Mid,Sofar_Out,Hole1,Hole).
+
+%%% DUPLICATE CHECKING FOR INST
+%%%
+%%% If no dliding priority is specified.
+     noslide_update_INST(_,_,CSize2,CP2,F2,Cn2,V2,_,CS2,CR2) :-
+	update_INST(CSize2,CP2,F2,Cn2,V2,CS2,CR2), !.
+     noslide_update_INST(RefNucl,U,CSize2,CP2,F2,Cn2,V2,W1,CS2,CR2) :-
+	proc_C(U,RefNucl,Cn2,V2,W1,CN2,Cn3,V21,V22,V3,W2),
+	!, check_literalbound(hl,CN2,CS2),
+	print_INST(Cn2,V2,CS2,CR2,F2),
+	asserta(sent_INST(cl(CSize2,CN2,by(Cn3,V21,V22,V3,W2),
+		0,CS2,CR2,0,F2,CP2))), !.
+
+%%% First check sent_INST, then sent_T, then sent_C.
+%%% The order is important.
+     update_INST(CSize2,CP2,F2,Cn2,V2,CS2,CR2) :-
+	const_list(V2),
+     	update_INST(CSize2,CP2,F2,Cn2,CS2,CR2).
+
+     update_INST(CSize2,CP2,F2,Cn2,CS2,CR2) :-
+	update_INST_1(CSize2,CP2,F2,Cn2,CS2,CR2).
+     update_INST(CSize2,CP2,F2,Cn2,CS2,CR2) :-
+	update_INST_2(CSize2,CP2,F2,Cn2,CS2,CR2).
+     update_INST(CSize2,CP2,F2,Cn2,CS2,CR2) :-
+	update_INST_3(CSize2,CP2,F2,Cn2,CS2,CR2).
+
+%%% Duplicate check against sent_INST.
+     update_INST_1(CSize1,pr(_,_,PL1,_,PX1),F1,Cn1,CS1,CR1) :-
+	sent_INST(cl(CSize1,_,by(Cn1,V21,V21,V2,_),_,
+		CS2,CR2,_,F2,pr(_,_,PL2,_,PX2))),
+	const_list(V2),
+	min_ind(PL2,PL1,PL3,Up),
+	min_ind(PX2,PX1,PX3,Up),
+	min_Flags_ind(F2,F1,F3,Up),
+	max_CS_ind(CS2,CS1,CS3,Up),
+	min_CR_ind(CR2,CR1,CR3,Up),
+	update_INST_11(Up,Cn1,PL3,PX3,F3,CS3,CR3).
+
+     update_INST_11(n,_,_,_,_,_,_) :- !.
+     update_INST_11(_,Cn1,PL3,PX3,F3,CS3,CR3) :-
+	clause(sent_INST(cl(_,_,by(Cn1,V21,V21,V2,_),_,_,_,_,_,_)),true,Ref2),
+	const_list(V2),
+	clause(sent_INST(cl(CSize2,CN2,BY_2,CI2,_,_,CT2,_,pr(PS2,PD2,_,_,_))),
+		true,Ref2),
+	erase(Ref2),
+	priority_NewPR(CR3,PR3),
+	asserta(sent_INST(cl(CSize2,CN2,BY_2,CI2,CS3,CR3,CT2,F3,
+		pr(PS2,PD2,PL3,PR3,PX3)))).
+
+%%% Duplicate check against sent_T.
+     update_INST_2(CSize1,pr(_,_,PL1,_,PX1),F1,Cn1,CS1,CR1) :-
+	sent_T(cl(CSize1,_,by(Cn1,V21,V21,V2,_),_,
+		CS2,CR2,_,F2,pr(_,_,PL2,_,PX2))),
+	const_list(V2),
+	min_ind(PL2,PL1,PL3,Up),
+	min_ind(PX2,PX1,PX3,Up),
+	min_Flags_ind(F2,F1,F3,Up),
+	max_CS_ind(CS2,CS1,CS3,Up),
+	min_CR_ind(CR2,CR1,CR3,Up),
+	update_INST_21(Up,Cn1,PL3,PX3,F3,CS3,CR3).
+
+     update_INST_21(n,_,_,_,_,_,_) :- !.
+     update_INST_21(_,Cn1,PL3,PX3,F3,CS3,CR3) :-
+	clause(sent_T(cl(_,_,by(Cn1,V21,V21,V2,_),_,_,_,_,_,_)),true,Ref2),
+	const_list(V2),
+	clause(sent_T(cl(CSize2,CN2,BY_2,_,_,CI2,CT2,_,pr(PS2,PD2,_,_,_))),
+		true,Ref2),
+	erase(Ref2),
+	priority_NewPR(CR3,PR3),
+	asserta(sent_T(cl(CSize2,CN2,BY_2,CI2,CS3,CR3,CT2,F3,
+		pr(PS2,PD2,PL3,PR3,PX3)))).
+
+%%% Duplicate check against sent_C.
+%%% If a duplicate found, store the instance as sent_T.
+     update_INST_3(CSize1,CP1,F1,Cn1,CS1,CR1) :-
+	sent_C(cl(CSize1,_,by(Cn1,V21,V21,V2,_),_,_,_,_,_,_)),
+	const_list(V2),
+	clause(sent_C(cl(_,_,by(Cn1,V31,V31,V3,_),_,_,_,_,_,_)),
+		true,Ref2),
+	const_list(V3),
+	clause(sent_C(cl(_,CN1,BY_2,_,_,_,_,_,_)),true,Ref2),
+	asserta(sent_T(cl(CSize1,CN1,BY_2,0,CS1,CR1,0,F1,CP1))).
+
+%%% RELEVANCE TEST 
+%%%
+%%% relevance test.
+%%% Two stages:
+%%%	1. Test user distance =< RelBound
+%%%	2. Test CR2 >= CR1
+%%%
+     check_rel_clause(ds(R11,R12,R13),Cn2,ds(R21,R22,R23)) :-
+	relevance_bound(RelBound),
+	check_rel_u(R21,RelBound),
+	!,
+	distance_equalR(R11,R12,R13,Cn2,RelBound),
+	!,
+	distance_ge(R21,R22,R23,R11,R12,R13), !.
+
+     check_rel_u(R,RelBound) :-
+	R =< RelBound, !.
+     check_rel_u(_,_) :-
+	assert_once(over_relevance), !, fail.
+
+%%% if max(B+F,U) = RelBound,
+%%%	then
+%%%	1. if U = RelBound, it should be unit.
+%%%	2. if B = RelBound, it should be all positive.
+%%%	3. if F = RelBound, it should be all negative.
+     distance_equalR(RelBound,_,_,[_,_|_],RelBound) :- !, fail.
+     distance_equalR(_,RelBound,_,Cn2,RelBound) :- \+ posclause(Cn2), !, fail.
+     distance_equalR(_,_,RelBound,Cn2,RelBound) :- \+ negclause(Cn2), !, fail.
+     distance_equalR(_,_,_,_,_).
+	
+     distance_ge(R21,R22,R23,R11,R12,R13) :-
+	R21 >= R11, !,
+	R22 >= R12, !,
+	R23 >= R13, !.
+
+%%% check max(B+F,U) =< relevance after each linking each literal. 
+%%% B+F is monotonically increasing, so there is no problem for B+F.
+%%% But U is monotonically decreasing. This cause problem.
+%%% So if max(B+F,U) test fails after the current literal linking, it
+%%% is not necessarily that 
+%%%	max(B+F,U)
+%%% test will fail at the end of hyper-linking of a nucleus.
+%%%
+%%% Therefore, the only thing that we can do for testing the relevance
+%%% after linking each literal is checking B+F. This automatically
+%%% consider the case that the nucleus is in support set.
+
+     check_rel_bf(ds(_,R12,R13)) :-
+	relevance_bound(RelBound),
+	YY is R12 + R13, !,
+	check_rel_bf_2(YY,RelBound), !.
+
+     check_rel_bf_2(YY,RelBound) :-
+	YY =< RelBound, !.
+     check_rel_bf_2(_,_) :-
+	assert_once(over_relevance), !, fail.
+
+%%% UPDATE CS AND CR
+%%%
+%%% onelink_SR updates the values of CS and CR.
+%%% onelink_S updates the values of CS.
+%%% For F, B, and UR:
+%%%	if CS1 has 1, then CS2 has the same as CSM.
+%%%	if CS1 has 0, then CS2 has 0.
+%%% For U:
+%%%	if CS1 has 1, then CS2 has 1.
+%%%	if CS1 has 0, then CS2 has the same as CSM.
+%%% onelink_R updates the values of CR.
+%%%	if CR1 has 0, then CR2 has 0.
+%%% 	if CR1 has nonzero, then CR2 is CRM + 1.
+
+     onelink_SR(Ln1,CS1,CR1,CSM,CRM,CS2,CR2) :-
+	onelink_S(Ln1,CS1,CSM,CS2),
+	onelink_R(CSM,Ln1,CR1,CRM,CR2), !.
+
+     onelink_S(Ln1,sp(S11,S12,S13),sp(S21,S22,S23),sp(S31,S32,S33)) :-
+	one_dominate(S11,S21,S31),
+	zero_dominate_bf(Ln1,S12,S22,S32,S13,S23,S33).
+
+%%% If one of inputs is 1, then the output is 1.
+     one_dominate(1,_,1) :- !.
+     one_dominate(_,S,S).
+
+%%% If one of inputs is 0, then the output is 0.
+     zero_dominate_bf(Ln1,S12,S22,S32,S13,_,S13) :-
+	negative_lit(Ln1),
+	zero_dominate(S12,S22,S32).
+     zero_dominate_bf(Ln1,S12,_,S12,S13,S23,S33) :-
+	zero_dominate(S13,S23,S33).
+
+     zero_dominate(0,_,0) :- !.
+     zero_dominate(_,S1,S1).
+
+     onelink_R(sp(S21,_,_),Ln1,ds(R11,R12,R13),
+		ds(R21,R22,R23),ds(R31,R32,R33)) :-
+	cal_ud(S21,R11,R21,R31),
+	cal_bfd(Ln1,R12,R22,R32,R13,R23,R33), !.
+
+     cal_ud(_,0,_,0) :- !.
+%%% If the mate is user supported,
+     cal_ud(1,R11,R21,R31) :-
+	RR is R21 + 1,
+	minimum(R11,RR,R31).
+%%% If the mate is not user supported,
+%%%	user distance = current user distance
+     cal_ud(0,R11,_,R11).
+
+     cal_bfd(Ln1,R12,R22,R32,R13,_,R13) :-
+	negative_lit(Ln1),
+	cal_bf(R12,R22,R32), !.
+     cal_bfd(_,R12,_,R12,R13,R23,R33) :-
+	cal_bf(R13,R23,R33).
+
+     cal_bf(0,_,0) :- !.
+     cal_bf(R1,R2,R3) :-
+	RR is R2 + 1,
+	maximum(R1,RR,R3).
+
+%%% Make adustments of the user distance.
+     adjust_userdist(ds(X,R12,R13),ds(R11,_,_),ds(R11,R12,R13)) :- 
+	infinity(X), !.
+     adjust_userdist(CRM,_,CRM) :- !.
+
+
+%%% GENERAL MATCHING
+%%%
+%%% Find one mate at a time.
+%%%
+%%% No reference as input, prolog does this very fast.
+     unify_mate_occurscheck(0,NLn1,T,CS2,CR2) :-
+	lit_S(T,lby(NLn1,V21,V22,_),CS2,CR2),
+	unify_lists(V21,V22).
+     unify_mate_occurscheck(1,NLn1,T,CS2,CR2) :-
+	lit_G(T,lby(NLn1,V21,V22,_),CS2,CR2),
+	unify_lists(V21,V22).
+
+%%% With reference as input, so unify one at a time.
+     unify_mate_occurscheck(0,NLn1,T,CS2,CR2,Ref2) :-
+	clause(lit_S(T,lby(NLn1,V21,V22,_),CS2,CR2),true,Ref2),
+	unify_lists(V21,V22).
+     unify_mate_occurscheck(1,NLn1,T,CS2,CR2,Ref2) :-
+	clause(lit_G(T,lby(NLn1,V21,V22,_),CS2,CR2),true,Ref2),
+	unify_lists(V21,V22).
+
+%%% HYPER-MATCHING LITERALS
+%%%
+%%% Matching one literal at a time.
+%%%
+     hl_literals([Ln1|Lns1],WO1,U,RefNucl,CS1,CR1,Mtype,
+		RLists,Ts,CS2,CR2) :-
+	hl_lit_reorder_3(WO1,[Ln1|Lns1],Ts,W1,Ws1,L1,Ls1,T1,Ts1),
+	!, hl_literal(U,RefNucl,L1,CS1,CR1,Mtype,RLists,T1,CSM,CRM),
+	!, hl_literals(Ls1,Ws1,U,RefNucl,CSM,CRM,Mtype,RLists,Ts1,CS2,CR2).
+     hl_literals([L1|Ls1],[W1|Ws1],U,RefNucl,CS1,CR1,Mtype,
+		RLists,[T1|Ts1],CS2,CR2) :-
+	hl_literal(U,RefNucl,L1,CS1,CR1,Mtype,RLists,T1,CSM,CRM),
+	w1_w2(Ws1,Ws2),
+	hl_literals(Ls1,Ws2,U,RefNucl,CSM,CRM,Mtype,RLists,Ts1,CS2,CR2).
+     hl_literals([],_,_,_,CS2,CR2,_,_,_,CS2,CR2).
+
+%%% Matching one literal.
+%%% hl_literal hyper-link a literal.
+%%% Inputs:
+%%%	U: 	1 if the nucleus is unit clause. We don't instantiate
+%%%		the nucleus, but have to find maximum B and F, minimum
+%%%		U.
+%%%		0 if the nucleus is not unit clause.
+%%%     RefNucl:	The reference for the nucleus. It is used for finding
+%%%		maximum B and F, minimum U for a unit nucleus such that
+%%%		we don't need to make copies for the unit nucleus.
+%%%	  Ln1:  A literal of the nucleus to be linked.
+%%%	  CS1:  Supported status.
+%%%	  CR1:  Distance.
+%%%	Mtype:  0 for Lit_S.
+%%%		1 for Lit_G.
+%%%      RLists:  The literal list for unit nucleus.
+%%% Outputs:
+%%%	    T:  1 if the mate is unit clause.
+%%%		0 if the mate is not unit clause.
+%%%	  CS2:  Supported status.
+%%%	  CR2:  Distance.
+
+%%% Check if relevance overflowed.
+%%% Check if backward or forward supported if it is reauired so.
+     hl_literal(U,RefNucl,Ln1,CS1,CR1,Mtype,RLists,T,CS2,CR2) :-
+	hl_literal_1(U,RefNucl,Ln1,CS1,CR1,Mtype,RLists,T,CS2,CR2),
+	check_rel_bf(CR2),
+	check_supp_bf(CS2).
+
+%%% Match the specified literal.
+%%% If the literal is unit clause, calculate the minimum or maximum for
+%%% 	the informations. No backtracking for more instances.
+     hl_literal_1(1,RefNucl,Ln1,CS1,CR1,Mtype,RLists,T,CS2,CR2) :-
+	unit_mate(RefNucl,Mtype,RLists,T,CSM,CRM),
+	onelink_SR(Ln1,CS1,CR1,CSM,CRM,CS2,CR2), !.
+%%% If the literal is ground, calculate the minimum or maximum for
+%%%     the informations. No backtracking for more instances.
+     hl_literal_1(0,_,Ln1,CS1,CR1,Mtype,RLists,T,CS2,CR2) :- 
+	numbervars(Ln1,0,0),
+	!,
+	ground_mate(Mtype,Ln1,RLists,T,CSM,CRM),
+	onelink_SR(Ln1,CS1,CR1,CSM,CRM,CS2,CR2), !.
+%%% Otherwise, with backtracking for more instances.
+     hl_literal_1(0,_,Ln1,CS1,CR1,Mtype,_,T,CS2,CR2) :- 
+	unify_mate_occurscheck(Mtype,Ln1,T,CSM,CRM),
+	onelink_SR(Ln1,CS1,CR1,CSM,CRM,CS2,CR2).
+
+%%% Find the informations for unit clause.
+     unit_mate(RefNucl,Mtype,RLists,T,CS2,CR2) :-
+	unit_mate_first(Mtype,RefNucl,RLists,TF,CSF,CRF,RListsR),
+	unit_mate_min(Mtype,RefNucl,TF,CSF,CRF,RListsR,T,CS2,CR2).
+
+     unit_mate_first(Mtype,RefNucl,RLists,TF,CSF,CRF,RListsR) :-
+	find_unitclause(RefNucl,NLn1),
+	mate_first(Mtype,NLn1,RLists,TF,CSF,CRF,RListsR).
+
+     unit_mate_min(Mtype,RefNucl,TF,CSF,CRF,RLists,T,CS2,CR2) :-
+	unit_mate_first(Mtype,RefNucl,RLists,T1,CS1,CR1,RListsR),
+	mate_min_1(TF,CSF,CRF,T1,CS1,CR1,TM,CSM,CRM), 
+	!,
+	unit_mate_min(Mtype,RefNucl,TM,CSM,CRM,RListsR,T,CS2,CR2).
+     unit_mate_min(_,_,T,CS2,CR2,_,T,CS2,CR2).
+
+%%% Find another copy of unit clause, so that the next linking can be
+%%%	done without being affected by the previous linking.
+     find_unitclause(RefNucl,NLn) :-
+	clause(sent_C(cl(_,_,by([ULn],V11,V11,_,_),_,_,_,_,_,_)),
+		true,RefNucl),
+	negate(ULn,NLn), !.
+
+%%% Find informations for a ground literal.
+     ground_mate(Mtype,Ln1,RLists,T,CS2,CR2) :-
+	mate_first(Mtype,Ln1,RLists,TF,CSF,CRF,RListsR),
+	mate_min(Mtype,Ln1,TF,CSF,CRF,RListsR,T,CS2,CR2).
+
+%%% Find the first link.
+     mate_first(Mtype,Ln1,[RList|RLists],TF,CSF,CRF,RLists) :-
+	unify_mate_occurscheck(Mtype,Ln1,TF,CSF,CRF,RList).
+     mate_first(Mtype,Ln1,[RList|RLists],TF,CSF,CRF,RestLists) :-
+     	mate_first(Mtype,Ln1,RLists,TF,CSF,CRF,RestLists).
+
+%%% Find the other linkes for calculating minimum or maximum informations.
+     mate_min(Mtype,Ln1,TF,CSF,CRF,RLists,T,CS2,CR2) :-
+	mate_first(Mtype,Ln1,RLists,T1,CS1,CR1,RListsR),
+	mate_min_1(TF,CSF,CRF,T1,CS1,CR1,TM,CSM,CRM),
+	!,
+     	mate_min(Mtype,Ln1,TM,CSM,CRM,RListsR,T,CS2,CR2).
+     mate_min(_,_,T,CS2,CR2,_,T,CS2,CR2).
+
+     mate_min_1(TF,CSF,CRF,T1,CS1,CR1,TM,CSM,CRM) :-
+	binary_max(TF,T1,TM),
+	max_CS(CSF,CS1,CSM),
+	min_CR(CRF,CR1,CRM).
+
+%%% check literal bound.
+     check_literalbound(hl,CV2,CS2) :-
+	check_all_literalbound(CV2), !,
+	check_user_literalbound(CV2,CS2), !,
+	check_back_literalbound(CV2,CS2), !,
+	check_for_literalbound(CV2,CS2), !.
+     check_literalbound(_,_,_).
+
+%%% Check general literal bound.
+     check_all_literalbound(CV2) :-
+	literal_bound(LitBdV), 
+	!, check_clause_literalbound(CV2,LitBdV).
+     check_all_literalbound(_).
+
+%%% Check literal bound for user supported instances.
+     check_user_literalbound(CV2,sp(1,_,_)) :-
+	user_literalbound(ULitBdV), 
+	!, check_clause_literalbound(CV2,ULitBdV).
+     check_user_literalbound(_,_).
+
+%%% Check literal bound for backward supported instances.
+     check_back_literalbound(CV2,sp(_,1,_)) :-
+	back_literalbound(BLitBdV), 
+	!, check_clause_literalbound(CV2,BLitBdV).
+     check_back_literalbound(_,_).
+
+%%% Check literal bound for forward supported instances.
+     check_for_literalbound(CV2,sp(_,_,1)) :-
+	for_literalbound(FLitBdV), 
+	!, check_clause_literalbound(CV2,FLitBdV). 
+     check_for_literalbound(_,_).
+
+%%% If the bound is 0, that means no literal bound is enforced.
+     check_clause_literalbound(_,-1).
+     check_clause_literalbound(Ln,LitBdV) :-
+	Ln =< LitBdV, !.
+     check_clause_literalbound(_,_) :-
+	assert_once(over_litbound), !, fail.
+
+%%% check if it is desiredly supported for B and F.
+     check_supp_bf(sp(_,0,_)) :-
+	current_support(sup(_,1,_,_)), !, fail.
+     check_supp_bf(sp(_,_,0)) :-
+	current_support(sup(_,_,1,_)), !, fail.
+     check_supp_bf(_) :- !.
+	
+%%% check if it is desiredly supported for U.
+     check_supp_u(sp(0,_,_)) :-
+	current_support(sup(1,_,_,_)), !, fail.
+     check_supp_u(_) :- !.
+
+%%% Determine the initial information fields for instances.
+     clause_part2(sp(S11,_,_),ds(0,R12,R13),sp(S11,1,1),ds(0,R12,R13)) :- !.
+     clause_part2(sp(S11,_,_),ds(_,R12,R13),sp(S11,1,1),ds(X,R12,R13)) :-
+        infinity(X), !.
+
+%%% Separate the literals of the nucleus into two groups. One group should be
+%%% linked by supported mates.
+%%% Note that Cn1 is already negated.
+     matord(Cn1,Ord1,Ord2,W1,WO1,WO2,T1,TOrd1,TOrd2) :-
+	current_support(Sup),
+     	matord(Sup,Cn1,Ord1,Ord2,W1,WO1,WO2,T1,TOrd1,TOrd2).
+
+     matord(Sup,[G|Gs],L1,L2,[W1|Ws1],WO1,WO2,[X|Xs],Y1,Y2) :-
+	matord_1(Sup,G,L1,L2,Ls1,Ls2,W1,WO1,WO2,WOs1,WOs2,X,Y1,Y2,Ys1,Ys2),
+	!,
+	matord(Sup,Gs,Ls1,Ls2,Ws1,WOs1,WOs2,Xs,Ys1,Ys2).
+     matord(_,[],[],[],[],[],[],[],[],[]).
+
+     matord_1(sup(1,0,0,0),G,[G|Ls1],Ls2,Ls1,Ls2,W,[W|Ws1],Ws2,
+		Ws1,Ws2,X,[X|Ys1],Ys2,Ys1,Ys2).
+     matord_1(sup(_,_,_,1),G,[G|Ls1],Ls2,Ls1,Ls2,W,[W|Ws1],Ws2,
+		Ws1,Ws2,X,[X|Ys1],Ys2,Ys1,Ys2).
+     matord_1(sup(_,1,_,_),G,[G|Ls1],Ls2,Ls1,Ls2,W,[W|Ws1],Ws2,
+		Ws1,Ws2,X,[X|Ys1],Ys2,Ys1,Ys2) :-
+	negative_lit(G).
+     matord_1(sup(_,1,_,_),G,Ls1,[G|Ls2],Ls1,Ls2,W,Ws1,[W|Ws2],
+		Ws1,Ws2,X,Ys1,[X|Ys2],Ys1,Ys2).
+     matord_1(_,G,[G|Ls1],Ls2,Ls1,Ls2,W,[W|Ws1],Ws2,
+		Ws1,Ws2,X,[X|Ys1],Ys2,Ys1,Ys2) :-
+	\+ negative_lit(G).
+     matord_1(_,G,Ls1,[G|Ls2],Ls1,Ls2,W,Ws1,[W|Ws2],
+		Ws1,Ws2,X,Ys1,[X|Ys2],Ys1,Ys2).
+
+%%% Throw away nucleus.
+%%% If the nucleus was generated from replace rules, don't throw away.
+%%% If a nucleus is supported by the current strategies, then it can be
+%%% 	thrown away.
+     check_throw_nucleus(1,_,_,_,_) :- !.
+     check_throw_nucleus(0,1,_,_,_) :- !.
+     check_throw_nucleus(0,_,Cn1,CS1,RefNucl) :-
+        check_throw_nucleus(Cn1,CS1),
+        erase(RefNucl), !.  
+     check_throw_nucleus(_,_,_,_,_).
+         
+     check_throw_nucleus(Cn1,sp(S11,S12,S13)) :-
+	current_support(sup(S21,S22,S23,S24)), !,
+	one_dominate(S11,S21,S11), !,
+	one_dominate(S12,S22,S12), !,
+	one_dominate(S13,S23,S13), !,
+	check_throw_nucleus_r(Cn1,S24).
+
+     check_throw_nucleus_r([_,_|_],1) :- !, fail.
+     check_throw_nucleus_r(_,_).
+
+     hl_lit_reorder_3(Ws,Ls,Ts,W1,Ws1,L1,Ls1,T1,Ts1) :-
+        hl_literal_reordering,
+        !, sep_gr_lit_3(Ws,Ls,Ts,W1,Ws1,L1,Ls1,T1,Ts1).

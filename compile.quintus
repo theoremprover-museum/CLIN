@@ -1,0 +1,7 @@
+#!/bin/csh -f
+
+rm -f compile.out compile.out.1
+prolog < compile.in >& compile.out
+qld -D -w -o qclin compile.out.1 >>& compile.out
+rm -f compile.out.1
+strip qclin

@@ -1,0 +1,79 @@
+
+
+	Bug reports and fixes:
+
+	1. in file fls, procedure
+                          create_r(MRefs1) :-
+                                bagof1(X, (Y,Z)^in_fls(Y,Z), Refs1),
+                                       ^
+                ------------->  bagof1(Z, (Y,Z)^in_fls(Y,Z), Refs1),
+                                       ^
+        2. In file hyper, the first clause of procedure
+                          hl_user(...) :-
+                                hl_user_literal_U(...),
+                                hl_literals(Lns1, ..., T1,CS2,CR2).
+                                                       ^^
+                ------------->  hl_literals(Lns1, ..., Ts1,CS2,CR2).
+                                                       ^^^
+        3. In file hyper, the second clause of procedure
+                          proc_C(_,_,_,[],_,_,0,[],...) :- !.
+                                    ^^
+                ------------->  proc_C(_,_,[],_,_,0,[],...) :- !.
+        4. In file interp, the second clause of procedure
+                          ubfsupp_o_1(Cn1,V11,V12,V1,W1,CSize1) :-
+                                supplement_clause(0,CN1,...), !.
+                ------------->  ubfsupp_o_1(Cn1,V11,V12,V1,W1,CN1,CSize1) :-
+                                                              ^^^^
+                                supplement_clause(0,CN1,...), !.
+        5. In file pc, procedures print_clause_list/1 and print_clause_list_1/1
+           are redefined. They have already defined in file auxiliary.
+        6. In file simplify, the first clause of procedure
+                                duplicate_deletion_2(...) :-
+                                        ...
+                                        binary_max_ind(CT1,CT2,CI3,Up),
+                                                                ^
+                                        ...
+                ------------->  duplicate_deletion_2(...) :-
+                                        ...
+                                        binary_max_ind(CT1,CT2,CT3,Up),
+                                                                ^
+                                        ...
+
+	7.
+
+        I fixed this problem is instdel some time ago.  Changed:
+
+        %%% we assume that input clauses are not instances of any clause.
+        %%% we take one clause sent_C, then check if it is deleted or not,
+        %%%     if not, we put it as sent_c.
+             instdel_1(Clist) :-
+                clause(sent_C(cl(_,_,by([Ln11,Ln12|Lns1],V11,V11,Clist,_),0,
+                        CS1,CR1,CT1,_,_)),true,Ref1),
+                clause(sent_C(C2),true,Ref1),
+                instdel_ckinst([Ln11,Ln12|Lns1],CS1,CR1,CT1,C2),
+                fail.
+
+        to
+
+        %%% we assume that input clauses are not instances of any clause.
+        %%% we take one clause sent_C, then check if it is deleted or not,
+        %%%     if not, we put it as sent_c.
+             instdel_1(Clist) :-
+                clause(sent_C(cl(_,_,by([Ln11,Ln12|Lns1],V11,V11,Clist,_),0,
+                        CS1,CR1,CT1,_,_)),true,Ref1),
+                clause(sent_C(C2),true,Ref1),
+        --->    erase(Ref1),
+                instdel_ckinst([Ln11,Ln12|Lns1],CS1,CR1,CT1,C2),
+                fail.
+
+	8. 
+
+	In PC prover, sometimes it will cause looping when out_model_rc is
+	set to print out models or relevant clauses. The fix is: 
+
+	reduce_set_1([],_,(Ctail,Nctail),L,_,_,_,unsat,[L|Ctail],Nctail) :- !.
+
+	is changed to
+
+	reduce_set_1([],_,(Ctail,Nctail),L,_,_,_,unsat,[L|Ctail],[Nctail]) :- !.
+								 ^^^^^^^^	

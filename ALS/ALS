@@ -1,0 +1,53 @@
+%%%
+%%% version 2.05.3
+%%%   initial version
+%%% version 2.05.4
+%%%   added banner to Quintus version
+%%% version 2.05.9
+%%%   added Quintus Prolog 3.1 support
+
+%%%
+%%% Specific code for ALS Prolog.
+%%%
+
+%%%
+%%% Cputime/1.
+%%%
+    cputime(X) :-
+      X is floor(cputime*1000)/1000.
+
+%%%
+%%% Floor/2.
+%%%
+    floor(X,Y) :-
+      Y is floor(X).
+
+%%%
+%%% Load_file/1.
+%%%
+    load_file(X) :-
+      [-X].
+
+%%%
+%%% Numbervars/3.
+%%%
+     numbervars('$VAR'(N),N,N1) :-
+	N1 is N + 1, !.
+     numbervars(Term,N1,N2) :-
+	nonvar(Term), functor(Term,F,N),
+	numbervars(0,N,Term,N1,N2).
+
+     numbervars(N,N,Term,N1,N1):- !.
+     numbervars(I,N,Term,N1,N3) :-
+	I < N,
+	I1 is I + 1,
+	arg(I1,Term,Arg),
+	numbervars(Arg,N1,N2),
+	numbervars(I1,N,Term,N2,N3).
+
+%%%
+%%% Initialization/1.
+%%%
+    initialization(X) :-
+      call(X),
+      !.

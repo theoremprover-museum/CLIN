@@ -1,0 +1,235 @@
+%%%
+%%% Specific code for Eclipse Prolog.
+%%%
+
+%%%
+%%% Set compiler for optimized compile.
+%%%
+:- nodbgcomp.
+
+%%%
+%%% Load Quintus Prolog compatibility library.
+%%%
+:- use_module(library(quintus)).
+
+%%%
+%%% Force compile of lists.pl
+%%%
+:- append([1],[2],_).
+
+%%%
+%%% Handle user interrupt signal (SIGINT -- 2).
+%%%
+user_interrupt_signal :-
+   set_interrupt_handler(2,true/0),
+   update_sentC,  
+   \+ unit_simp_subs_hk_1,
+   assert_tryresult('user_interrupt'),
+   not(not(summary)),
+   reset_by_horn_set,
+   not(not(postproc)),
+   !,
+   halt.
+user_interrupt_signal :-
+   halt.
+:- set_interrupt_handler(2,user_interrupt_signal/0).
+
+%%%
+%%% Handle user kill signal (SIGTERM -- 15).
+%%%
+user_kill_signal :-
+   set_interrupt_handler(15,true/0),
+   update_sentC,  
+   \+ unit_simp_subs_hk_1,
+   assert_tryresult('user_kill'),
+   not(not(summary)),
+   reset_by_horn_set,
+   not(not(postproc)),
+   !,
+   halt.
+user_kill_signal :-
+   halt.
+:- set_interrupt_handler(15,user_kill_signal/0).
+
+%%%
+%%% Handle time overflow signal (SIGXCPU -- 24).
+%%%
+time_overflow_signal :-
+   set_interrupt_handler(24,true/0),
+   update_sentC,  
+   \+ unit_simp_subs_hk_1,
+   assert_tryresult('time_overflow'),
+   not(not(summary)),
+   reset_by_horn_set,
+   !,
+   not(not(postproc)),
+   halt.
+time_overflow_signal :-
+   halt.
+:- set_interrupt_handler(24,time_overflow_signal/0).
+
+%%%
+%%% nl/0
+%%%
+nl :-
+  call_explicit(nl,sepia_kernel),
+  flush(1).
+
+%%%
+%%% Code to allow database references for clauses.  Doesn't handle module
+%%% specification, ie. mod:clause.  Also, type checking is not performed.
+%%%
+abolish([]) :- !.
+abolish([Pred|PredList]) :-
+        abolish(Pred),
+        abolish(PredList).
+abolish(Name/Arity) :-
+        call_explicit(abolish(Name/Arity),quintus),
+        functor(Key,Name,Arity),
+        erase_all(Key).
+abolish(Name,Arity) :-
+        abolish(Name/Arity).
+assert((Head :- Body)) :-
+        !,
+        call_explicit(assert((Head :- Body)),sepia_kernel),
+        'make_db_key$'(Head,Key),
+        recorda(Key,(Head :- Body),_).
+assert(Fact) :-
+        call_explicit(assert(Fact),sepia_kernel),
+        'make_db_key$'(Fact,Key),
+        recorda(Key,(Fact :- true),_).
+assert((Head :- Body),Ref) :-
+        !,
+        call_explicit(assert((Head :- Body)),sepia_kernel),
+        'make_db_key$'(Head,Key),
+        recorda(Key,(Head :- Body),Ref).
+assert(Fact,Ref) :-
+        call_explicit(assert(Fact),sepia_kernel),
+        'make_db_key$'(Fact,Key),
+        recorda(Key,(Fact :- true),Ref).
+asserta((Head :- Body)) :-
+        !,
+        call_explicit(asserta((Head :- Body)),sepia_kernel),
+        'make_db_key$'(Head,Key),
+        recorda(Key,(Head :- Body),_).
+asserta(Fact) :-
+        call_explicit(asserta(Fact),sepia_kernel),
+        'make_db_key$'(Fact,Key),
+        recorda(Key,(Fact :- true),_).
+asserta((Head :- Body),Ref) :-
+        !,
+        call_explicit(asserta((Head :- Body)),sepia_kernel),
+        'make_db_key$'(Head,Key),
+        recorda(Key,(Head :- Body),Ref).
+asserta(Fact,Ref) :-
+        call_explicit(asserta(Fact),sepia_kernel),
+        'make_db_key$'(Fact,Key),
+        recorda(Key,(Fact :- true),Ref).
+assertz((Head :- Body)) :-
+        !,
+        call_explicit(assert((Head :- Body)),sepia_kernel),
+        'make_db_key$'(Head,Key),
+        recordz(Key,(Head :- Body),_).
+assertz(Fact) :-
+        call_explicit(assert(Fact),sepia_kernel),
+        'make_db_key$'(Fact,Key),
+        recordz(Key,(Fact :- true),_).
+assertz((Head :- Body),Ref) :-
+        !,
+        call_explicit(assert((Head :- Body)),sepia_kernel),
+        'make_db_key$'(Head,Key),
+        recordz(Key,(Head :- Body),Ref).
+assertz(Fact,Ref) :-
+        call_explicit(assert(Fact),sepia_kernel),
+        'make_db_key$'(Fact,Key),
+        recordz(Key,(Fact :- true),Ref).
+clause(Head,Body) :-
+        'make_db_key$'(Head,Key),
+        recorded(Key,(Head :- Body),_).
+clause(Head,Body,Ref) :-
+        nonvar(Ref),
+        !,
+        instance(Ref,(Head :- Body)).
+clause(Head,Body,Ref) :-
+        nonvar(Head),
+        !,
+        'make_db_key$'(Head,Key),
+        recorded(Key,(Head :- Body),Ref).
+clause(_,_,_) :-
+        write('clause/3 type error'),
+        nl,
+        abort.
+erase(Ref) :-
+        instance(Ref,Clause),
+        'ground$'(Clause),
+        once(call_explicit(retract(Clause),sepia_kernel)),
+        call_explicit(erase(Ref),quintus).
+'ground$'(Term) :-
+        term_variables(Term,Variables),
+        'ground$1'(Variables,0).
+'ground$1'([],_) :- !.
+'ground$1'([Variable|Variables],N) :-
+        N1 is N+1,
+        name('$$',List1),
+        name(N1,List2),
+        append(List1,List2,List3),
+        name(Variable,List3),
+        !,
+        'ground$1'(Variables,N1).
+'make_db_key$'(Term,Key) :-
+        functor(Term,Name,Arity),
+        functor(Key,Name,Arity).
+recorded(Key,Term,Ref) :-
+        nonvar(Ref),
+        !,
+        'recorded$1'(Key,Term,Ref).
+recorded(Key,Term,Ref) :-
+        call_explicit(recorded(Key,Term,Ref),quintus).
+'recorded$1'(Key,Term,Ref) :-
+        current_record(Key),
+        call_explicit(recorded(Key,Term,Ref),quintus),
+        !.
+retract((Head :- Body)) :-
+        !,
+        clause(Head,Body,Ref),
+        erase(Ref).
+retract(Fact) :-
+        clause(Fact,true,Ref),
+        erase(Ref).
+retractall(Head) :-
+        clause(Head,_,Ref),
+        erase(Ref),
+        fail.
+retractall(_).
+        
+%%%
+%%% Simply fail unknown predicates.
+%%%
+:- unknown(_,fail).
+
+%%%
+%%% Quintus_banner/0.
+%%%
+quintus_banner :-
+  clin_version(Version),
+  nl, tab(15),write('WELCOME TO CLIN '),
+  write(Version),nl,
+  write('(c) 1990 by Shie-Jue Lee and David Plaisted'),
+  nl,nl,nl,
+  !.
+
+%%%
+%%% load_file/1.
+%%%
+load_file(X) :-
+  no_style_check(single_var),
+  compile(X).
+
+%%%
+%%% Overide selection operator precedences.
+%%%
+:- op(900,fy,[not]).
+:- op(30,fx,[@]).
+:- op(100,xfy,[&]).
+:- op(120,xfy,[#]).
+:- op(150,xfx,[=>,<=>]).
